@@ -1,0 +1,309 @@
+---
+title: "gsea"
+author: "Eirik Tveit Solheim"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = F,
+                      warning = F, 
+                      cache.extra = set.seed(123))
+```
+
+
+## Info
+
+This R markdown document contains the code to perform gene set enrichment analysis (GSEA) of the transcriptome, proteome and secretome of CDR2L-knockout cells.  
+Seed was set (set.seed(123)) in the knitr options to ensure reproducibility for all code chunks.  
+
+
+## Load required packages
+
+```{r}
+library(rmarkdown)
+library(fgsea)    
+library(data.table)
+library(DESeq2) 
+library(reshape2)
+library(tidyverse)         
+```
+
+
+## Load preprocessed data
+
+Data was generated in `preprocess.Rmd`.  
+
+```{r}
+resTranscriptomeCDR2L <- readRDS("./results/resTranscriptomeCDR2L.rds")
+dds <- readRDS("./rdsData/dds.rds")
+DESeqResTranscriptomeCDR2L <- readRDS("./results/DESeqResTranscriptomeCDR2L.rds")
+resProteomeCDR2L <- readRDS("./results/resProteomeCDR2L.rds")
+resSecretomeCDR2L <- readRDS("./results/resSecretomeCDR2L.rds")
+```
+
+
+## Load gene sets from Molecular Signatures Database (MSigDB)
+
+```{r}
+GOBP_pathways <- gmtPathways("./refData/c5.go.bp.v2022.1.Hs.symbols.gmt")
+GOMF_pathways <- gmtPathways("./refData/c5.go.mf.v2023.1.Hs.symbols.gmt")
+GOCC_pathways <- gmtPathways("./refData/c5.go.cc.v2023.1.Hs.symbols.gmt")
+KEGG_pathways <- gmtPathways("./refData/c2.cp.kegg.v2022.1.Hs.symbols.gmt")
+
+gmt.files <- c(GOBP = "./refData/c5.go.bp.v2022.1.Hs.symbols.gmt",
+               GOMF = "./refData/c5.go.mf.v2023.1.Hs.symbols.gmt",
+               GOCC = "./refData/c5.go.cc.v2023.1.Hs.symbols.gmt",
+               KEGG = "./refData/c2.cp.kegg.v2022.1.Hs.symbols.gmt")
+pathways <- lapply(gmt.files, fgsea::gmtPathways)
+names(pathways) <- names(gmt.files)
+
+# Add GO term IDs
+GOtermID <- read.delim("./refData/MSigDB_GO_Terms.txt", header = TRUE, sep = "\t")
+```
+
+
+## GSEA of knockout CDR2L transcriptome
+
+```{r}
+# Set seed
+set.seed(123)
+
+# Apply shrinkage to log2FC using DESeq2 and then rank genes by shrunk log2FoldChange
+ranks.CDR2L.transcriptome <- DESeqResTranscriptomeCDR2L %>%
+	DESeq2::lfcShrink(dds, res = ., coef = "condition_KO.CDR2L_vs_WT") %>%
+	as.data.frame %>%
+	mutate(gene_id = rownames(.)) %>%
+	left_join(x = .,
+	          y = resTranscriptomeCDR2L %>% select(gene_id, gene_name), 
+	          by = "gene_id") %>%
+	select(gene_name, log2FoldChange) %>% 
+  arrange(desc(log2FoldChange))
+rownames(ranks.CDR2L.transcriptome) <- ranks.CDR2L.transcriptome$gene_name
+ranks.CDR2L.transcriptome <- setNames(ranks.CDR2L.transcriptome$log2FoldChange, ranks.CDR2L.transcriptome$gene_name)
+
+# Run GSEA with all gene sets
+gsea.CDR2L.transcriptome <- lapply(names(pathways), function(pathwayName){
+  message(paste0("Running ", pathwayName, "..."))
+  fgsea(pathways[[pathwayName]],
+        ranks.CDR2L.transcriptome,
+        minSize = 5,
+        maxSize = 500) %>% 
+    as_tibble() %>% 
+    mutate(Set = pathwayName)
+})
+names(gsea.CDR2L.transcriptome) <- names(pathways)
+df.gsea.CDR2L.transcriptome <- do.call(rbind, gsea.CDR2L.transcriptome)
+
+# Compile results in a single table
+res.gsea.CDR2L.transcriptome <- df.gsea.CDR2L.transcriptome %>% filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  select(pathway, padj, NES, leadingEdge, size, Set) %>% 
+  mutate(padj = round(padj, digit = 4), NES = round(NES, digit = 3))
+
+# Add GO term IDs
+res.gsea.CDR2L.transcriptome <- res.gsea.CDR2L.transcriptome %>% 
+  left_join(x = .,
+            y = GOtermID %>% select(MSigDB_Set_Name, GO_Term_ID),
+            by = c("pathway" = "MSigDB_Set_Name"))
+```
+
+Collapse list of enriched gene sets to independent ones to reduce redundancy in results.
+
+```{r, warning = FALSE}
+# Set seed
+set.seed(123)
+
+collapse.gsea.CDR2L.transcriptome <- df.gsea.CDR2L.transcriptome %>% 
+  data.table::as.data.table() %>%              
+  filter(padj < 0.05) %>% 
+  select(1:8) %>% 
+  arrange(padj)
+rownames(collapse.gsea.CDR2L.transcriptome) <- NULL
+
+collapsedPathways.CDR2L.transcriptome <- collapsePathways(fgseaRes = collapse.gsea.CDR2L.transcriptome,
+                                                     pathways = c(pathways[["GOBP"]], pathways[["GOMF"]], pathways[["GOCC"]], pathways[["KEGG"]]),
+                                                     stats = ranks.CDR2L.transcriptome,
+                                                     pval.threshold = 0.05)
+
+mainPathways.CDR2L.transcriptome <- collapse.gsea.CDR2L.transcriptome[pathway %in% collapsedPathways.CDR2L.transcriptome$mainPathways]
+```
+
+
+
+
+## GSEA of knockout CDR2L proteome
+
+```{r}
+# Set seed
+set.seed(123)
+
+# Rank the proteins according to t-statistic
+ranks.CDR2L.proteome <- resProteomeCDR2L %>% 
+  arrange(desc(t)) %>%
+  distinct(Gene, .keep_all = TRUE)                              
+rownames(ranks.CDR2L.proteome) <- ranks.CDR2L.proteome$Gene
+ranks.CDR2L.proteome <- setNames(ranks.CDR2L.proteome$t, ranks.CDR2L.proteome$Gene)
+
+# Run GSEA with all gene sets
+gsea.CDR2L.proteome <- lapply(names(pathways), function(pathwayName){
+  message(paste0("Running ", pathwayName, "..."))
+  fgsea(pathways[[pathwayName]],
+        ranks.CDR2L.proteome,
+        minSize = 5,
+        maxSize = 500) %>% 
+    as_tibble() %>% 
+    mutate(Set = pathwayName)
+})
+names(gsea.CDR2L.proteome) <- names(pathways)
+df.gsea.CDR2L.proteome <- do.call(rbind, gsea.CDR2L.proteome)
+
+# Compile results in a single table
+res.gsea.CDR2L.proteome <- df.gsea.CDR2L.proteome %>% filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  select(pathway, padj, NES, leadingEdge, size, Set) %>% 
+  mutate(padj = round(padj, digit = 4), NES = round(NES, digit = 3))
+
+# Add GO term IDs
+res.gsea.CDR2L.proteome <- res.gsea.CDR2L.proteome %>% 
+  left_join(x = .,
+            y = GOtermID %>% select(MSigDB_Set_Name, GO_Term_ID),
+            by = c("pathway" = "MSigDB_Set_Name"))
+```
+
+Collapse list of enriched gene sets to independent ones to reduce redundancy in results.
+
+```{r, warning = FALSE}
+# Set seed
+set.seed(123)
+
+collapse.gsea.CDR2L.proteome <- df.gsea.CDR2L.proteome %>% 
+  data.table::as.data.table() %>%              
+  filter(padj < 0.05) %>% 
+  select(1:8) %>% 
+  arrange(padj)
+rownames(collapse.gsea.CDR2L.proteome) <- NULL
+
+collapsedPathways.CDR2L.proteome <- collapsePathways(fgseaRes = collapse.gsea.CDR2L.proteome,
+                                                     pathways = c(pathways[["GOBP"]], pathways[["GOMF"]], pathways[["GOCC"]], pathways[["KEGG"]]),
+                                                     stats = ranks.CDR2L.proteome,
+                                                     pval.threshold = 0.05)
+
+mainPathways.CDR2L.proteome <- collapse.gsea.CDR2L.proteome[pathway %in% collapsedPathways.CDR2L.proteome$mainPathways]
+```
+
+
+
+
+## GSEA of knockout CDR2L secretome
+
+```{r}
+# Set seed
+set.seed(123)
+
+# Rank the proteins according to t-statistic
+ranks.CDR2L.secretome <- resSecretomeCDR2L %>% 
+  arrange(desc(t)) %>%
+  distinct(Gene, .keep_all = TRUE)                              
+rownames(ranks.CDR2L.secretome) <- ranks.CDR2L.secretome$Gene
+ranks.CDR2L.secretome <- setNames(ranks.CDR2L.secretome$t, ranks.CDR2L.secretome$Gene)
+
+# Run GSEA with all gene sets
+gsea.CDR2L.secretome <- lapply(names(pathways), function(pathwayName){
+  message(paste0("Running ", pathwayName, "..."))
+  fgsea(pathways[[pathwayName]],
+        ranks.CDR2L.secretome,
+        minSize = 5,
+        maxSize = 500) %>% 
+    as_tibble() %>% 
+    mutate(Set = pathwayName)
+})
+names(gsea.CDR2L.secretome) <- names(pathways)
+df.gsea.CDR2L.secretome <- do.call(rbind, gsea.CDR2L.secretome)
+
+# Compile results in a single table
+res.gsea.CDR2L.secretome <- df.gsea.CDR2L.secretome %>% filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  select(pathway, padj, NES, leadingEdge, size, Set) %>% 
+  mutate(padj = round(padj, digit = 4), NES = round(NES, digit = 3))
+
+# Add GO term IDs
+res.gsea.CDR2L.secretome <- res.gsea.CDR2L.secretome %>% 
+  left_join(x = .,
+            y = GOtermID %>% select(MSigDB_Set_Name, GO_Term_ID),
+            by = c("pathway" = "MSigDB_Set_Name"))
+```
+
+Collapse list of enriched gene sets to independent ones to reduce redundancy in results.
+
+```{r, warning = FALSE}
+# Set seed
+set.seed(123)
+
+collapse.gsea.CDR2L.secretome <- df.gsea.CDR2L.secretome %>% 
+  data.table::as.data.table() %>%              
+  filter(padj < 0.05) %>% 
+  select(1:8) %>% 
+  arrange(padj)
+rownames(collapse.gsea.CDR2L.secretome) <- NULL
+
+collapsedPathways.CDR2L.secretome <- collapsePathways(fgseaRes = collapse.gsea.CDR2L.secretome,
+                                                     pathways = c(pathways[["GOBP"]], pathways[["GOMF"]], pathways[["GOCC"]], pathways[["KEGG"]]),
+                                                     stats = ranks.CDR2L.secretome,
+                                                     pval.threshold = 0.05)
+
+mainPathways.CDR2L.secretome <- collapse.gsea.CDR2L.secretome[pathway %in% collapsedPathways.CDR2L.secretome$mainPathways]
+```
+
+
+## Create dataframe for heatmap of common enriched gene sets
+
+```{r, fig.height=10}
+# Combine all GSEA results in one table
+HeatPathway <- res.gsea.CDR2L.proteome %>% select(pathway, padj, NES) %>% 
+  full_join(x = .,
+            y = res.gsea.CDR2L.secretome %>% select(pathway, padj, NES),
+            by = "pathway",
+            suffix = c(".Prot", ".CCM")) %>% 
+  full_join(x = .,
+            y = res.gsea.CDR2L.transcriptome %>% select(pathway, padj, NES),
+            by = "pathway") %>% 
+  # Create a new variable with the number of `NA`s for each pathway
+  mutate(na_count = apply(., 1, function(x) sum (is.na(x[c(2,4,6)])))) %>% 
+  # Filter df to only include pathways common to at least two datasets
+  filter(na_count <= 1) %>%                                                 # n = 40
+  # Limit the number of characters in pathway names
+  mutate(pathway = case_when(
+    nchar(pathway) > 40 ~ paste0(substr(pathway, 1, 40), "..."),
+    TRUE ~ pathway)) %>% 
+  select(pathway, NES.Prot, NES.CCM, NES) %>% 
+  rename(Proteome = NES.Prot, Secretome = NES.CCM, Transcriptome = NES) %>% 
+  column_to_rownames("pathway")
+```
+
+
+
+
+
+
+
+## Save GSEA results for use in "analysis.Rmd"
+
+```{r}
+# Enriched gene sets
+saveRDS(res.gsea.CDR2L.transcriptome, "./results/res.gsea.CDR2L.transcriptome.rds")
+saveRDS(res.gsea.CDR2L.proteome, "./results/res.gsea.CDR2L.proteome.rds")
+saveRDS(res.gsea.CDR2L.secretome, "./results/res.gsea.CDR2L.secretome.rds")
+
+# Collapsed gene sets
+saveRDS(mainPathways.CDR2L.transcriptome, "./results/mainPathways.CDR2L.transcriptome.rds")
+saveRDS(mainPathways.CDR2L.proteome, "./results/mainPathways.CDR2L.proteome.rds")
+saveRDS(mainPathways.CDR2L.secretome, "./results/mainPathways.CDR2L.secretome.rds")
+
+# Dataframe for heatmap
+saveRDS(HeatPathway, "./rdsData/HeatPathway.rds")
+```
+

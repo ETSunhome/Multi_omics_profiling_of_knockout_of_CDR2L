@@ -1,0 +1,597 @@
+---
+title: "preprocess"
+author: "Eirik Tveit Solheim"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = F,
+                      warning = F)
+```
+
+This R markdown document contains all the code needed to preprocess the transcript counts and protein intensities, and perform differential expression analysis. 
+
+## Load required packages
+
+```{r}
+library(rmarkdown)
+library(biomaRt)
+library(data.table)
+library(matrixStats)
+library(tximport) 
+library(DESeq2)          
+library(missForest)
+library(edgeR) 
+library(limma)
+library(tidyverse)         
+```
+
+
+## Preprocessing of transcriptome dataset
+
+### Read in metadata
+
+```{r}
+metadataTranscriptome <- read.delim("./rawData/metadataTranscriptome.txt", header = TRUE, sep = "\t")
+```
+
+
+### Import quant.sf files produced by Salmon
+
+```{r}
+# Create vector of file paths for quant.sf files
+sample_files <- paste0("./rawData/salmonOut/",
+                       pull(metadataTranscriptome, "sample_id"),
+                       "/quant.sf")
+names(sample_files) <- pull(metadataTranscriptome, "sample_id")
+```
+
+
+### Match transcript IDs in salmon output with gene symbols and Uniprot accession IDs
+
+```{r}
+geneSymb <- readRDS("refData/EnsDb.Hsapiens.v75.Rds")
+tx2gene <- select(geneSymb, tx_id, gene_id)
+```
+
+```{r}
+# Get list of gene IDs and matching UniProt accession IDs from BioMart
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")    # version: GRCh38.p13
+
+BM <- getBM(attributes = c("ensembl_gene_id", "uniprotswissprot"),
+             mart = ensembl)
+BM <- BM[!BM$uniprotswissprot == "", ]
+
+# Widen dataframe
+BMwide <- data.table::dcast(data.table::setDT(BM), ensembl_gene_id ~ data.table::rowid(ensembl_gene_id, prefix = "uniprotswissprot"), value.var = "uniprotswissprot")
+
+# Swap some of the accession IDs between uniprotswissprot1 and uniprotswissprot2 to match more proteins in proteome dataset with mRNAs from transcriptome
+BMwide <- BMwide %>% 
+  mutate(uniprotswissprot = uniprotswissprot1) %>% 
+  mutate(uniprotswissprot = case_when(
+    uniprotswissprot == "O95467" ~ "Q5JWF2",
+    uniprotswissprot == "Q8IXS6" ~ "Q9Y2D5",
+    uniprotswissprot == "Q8N2E6" ~ "Q5JU69",
+    uniprotswissprot == "Q5XKL5" ~ "Q9UPP5",
+    uniprotswissprot == "Q13948" ~ "P39880",
+    TRUE ~ as.character(uniprotswissprot)))
+
+# Create a separate data frame with gene symbols for joining with results table later
+genes <- geneSymb %>% select(gene_id, gene_name, gene_biotype, seqnames) %>% distinct() %>%     
+	mutate(seqnames = paste0("chr", seqnames))                                            
+```
+
+
+### Import quantification data with tximport
+
+```{r}
+txi <- tximport(files = sample_files,
+                type = "salmon",
+                tx2gene = tx2gene,
+                ignoreTxVersion = TRUE)   # disregards transcript id version
+```
+
+
+### Filter raw counts
+
+* Exclude genes with zero counts  
+* Exclude genes with constant counts across all samples  
+* Exclude mitochondria-encoded genes  
+* Exclude lowly expressed genes  
+* Exclude genes without gene symbol or with duplicated gene symbols  
+
+```{r}
+# Exclude genes with 0 counts and 0 variance (n = 26 939)
+counts_filt <- txi$counts[rowSums(txi$counts > 0) & rowVars(txi$counts) > 0, ] %>%
+	as.data.frame %>%
+	mutate(gene_id = rownames(.)) %>%
+  # Add gene symbols
+	left_join(x = ., 
+	          y = genes, 
+	          by = "gene_id") %>%
+  # Add accession IDs
+  left_join(x = ., 
+            y = BMwide %>% select (ensembl_gene_id, uniprotswissprot),
+            by = c("gene_id" = "ensembl_gene_id"))
+rownames(counts_filt) <- counts_filt$gene_id
+
+# Exclude mitochondria-encoded genes (n = 35)
+MitoGenes <- geneSymb %>% 
+  filter(grepl("^MT-", geneSymb$gene_name) & !(geneSymb$gene_biotype %in% c("Mt_rRNA")))
+
+countMatrixFiltered <- counts_filt %>%
+        	filter(!(gene_id %in% MitoGenes$gene_id))  
+
+# Define function for converting counts to counts per million (CPM)
+count2CPM <- function(countData){
+  apply(countData, 2, function(SampleCount){
+    SampleLibSize = sum(SampleCount)
+    (10^6)*(SampleCount/SampleLibSize)
+    })
+}
+
+# Create log2 CPM matrix
+cpmMatrixFiltered <- as.data.frame(log2(count2CPM(countMatrixFiltered %>% select(where(is.numeric))) + 1)) %>% 
+  mutate(gene_id = countMatrixFiltered$gene_id,
+         uniprotswissprot = countMatrixFiltered$uniprotswissprot)
+
+CPM <- left_join(x = cpmMatrixFiltered,
+                 y = genes %>% select(gene_id, gene_name),
+                 by = "gene_id") %>%
+  select(gene_id, gene_name, uniprotswissprot, everything())
+
+# Define a "noise" threshold for CPM
+genesAboveNoise <- apply(CPM %>% select(where(is.numeric)) %>%
+                           as.matrix, 1, function(g) {
+                             quantile(g, 0.80) > 0.1})
+
+# Exclude genes below noise threshold (n = 7075)
+CPM <- CPM[genesAboveNoise, ]
+
+# Exclude genes with no gene symbol or with duplicated gene symbol (n = 39)
+CPM <- CPM %>% 
+  filter(gene_name != "", !is.na(gene_name)) %>%
+  mutate(Sum = do.call(pmax, select_if(., is.numeric))) %>%
+  arrange(desc(Sum)) %>%
+  distinct(gene_name, .keep_all=TRUE) %>%
+  select(-Sum) %>%
+  arrange(gene_id)
+```
+
+
+## Differential expression analysis
+
+* Construct a DESeqDataSet (dds) object  
+* Perform differential expression analysis using `DESeq2` package  
+
+```{r}
+dds <- DESeqDataSetFromTximport(txi = txi,
+                                colData = metadataTranscriptome,
+                                design = ~ condition)
+
+# Only keep genes which survived the filtering above
+dds <- dds[rownames(dds) %in% CPM$gene_id,]
+
+# Set factor level
+dds$condition <- relevel(dds$condition, ref = "WT")
+
+# Perform differential expression analysis
+dds <- DESeq(dds)
+```
+
+
+### Create results tables
+
+```{r}
+# KO.CDR2L vs WT
+resTranscriptomeCDR2L <- results(dds, contrast = c("condition", "KO.CDR2L", "WT")) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene_id") %>% 
+  left_join(x = .,
+            y = CPM %>% select(gene_id, gene_name, uniprotswissprot),
+            by = "gene_id") %>% 
+  select(gene_id, gene_name, uniprotswissprot, everything()) %>% 
+  arrange(padj)
+
+# Save as DESeqResults object for use in GSEA analysis 
+DESeqResTranscriptomeCDR2L <- results(dds, contrast = c("condition", "KO.CDR2L", "WT"))
+
+# KO.CDR2 vs WT
+resTranscriptomeCDR2 <- results(dds, contrast = c("condition", "KO.CDR2", "WT")) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene_id") %>% 
+  left_join(x = .,
+            y = CPM %>% select(gene_id, gene_name, uniprotswissprot),
+            by = "gene_id") %>% 
+  select(gene_id, gene_name, uniprotswissprot, everything()) %>% 
+  arrange(padj)
+
+# KO.CDR1 vs WT
+resTranscriptomeCDR1 <- results(dds, contrast = c("condition", "KO.CDR1", "WT")) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene_id") %>% 
+  left_join(x = .,
+            y = CPM %>% select(gene_id, gene_name, uniprotswissprot),
+            by = "gene_id") %>% 
+  select(gene_id, gene_name, uniprotswissprot, everything()) %>% 
+  arrange(padj)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Preprocessing of proteome dataset
+
+### Read in metadata
+
+```{r}
+metadataProteome <- read.delim("./rawData/metadataProteome.txt", header = TRUE, sep = "\t")
+```
+
+
+### Read in and tidy proteomic data
+
+* Select necessary columns  
+* Rename columns  
+* Add gene symbols  
+* Remove proteins labelled as contaminants by Proteome Discoverer  
+
+```{r}
+proteins_raw <- read.delim("./rawData/rawDataProteome.txt", header = TRUE, sep = "\t", dec = ".")
+
+# Select necessary columns
+proteins <- proteins_raw %>% 
+  select(Accession, Description, Contaminant, X..Peptides, X..PSMs, starts_with("Abundances..Normalized"))
+
+# Rename columns
+colnames(proteins) <- c("Accession", "Description", "Contaminant", "n_Peptides", "n_PSMs",
+                        paste("WT", 1:3, sep = "."),
+                        paste("KO.CDR1", 1:3, sep= "."),
+                        paste("KO.CDR2", 1:3, sep = "."),
+                        paste("KO.CDR2L", 1:3, sep = "."))
+
+# Pull the gene symbols from "Description" and assign to new column
+proteins$Gene <- sub(".*GN=", "", proteins$Description) %>% 
+  sub(" PE=.*", "", .)
+
+# Remove contaminants 
+proteins <- proteins %>% filter(Contaminant == "FALSE")
+```
+
+
+### Filter and impute missing values
+
+* Filter proteins: only proteins that have values (i.e. not `NA`) in all replicates in at least one group will be kept for downstream analysis.  
+* Create matrix containing only abundance values.  
+* Impute missing values with random forest from `missForest` package.  
+
+```{r, warning=F}
+# Create a new variable with the number of `NA`s for each protein in the four groups.
+proteins$na_count_WT <- apply(proteins,1,function(x) sum(is.na(x[6:8])))
+proteins$na_count_KO.CDR1 <- apply(proteins,1,function(x) sum(is.na(x[9:11])))
+proteins$na_count_KO.CDR2 <- apply(proteins,1,function(x) sum(is.na(x[12:14])))
+proteins$na_count_KO.CDR2L <- apply(proteins,1,function(x) sum(is.na(x[15:17])))
+
+# Filter based on the number of NA's
+proteins_filt <- proteins %>% filter(na_count_WT == 0 | na_count_KO.CDR1 == 0 | na_count_KO.CDR2 == 0 | na_count_KO.CDR2L == 0)
+
+# Create a matrix 
+m <- proteins_filt %>% 
+  select(6:17) %>% 
+  as.matrix()
+rownames(m) <- proteins_filt$Accession
+
+# Impute missing values using random forest 
+m.RF <- missForest(t(m))$ximp 
+```
+
+
+### Differential expression analysis
+
+* Exclude lowly expressed proteins (median abundance < 5th percentile)  
+* Specify grouping info  
+* Specify model matrix  
+* Log2 transform abundance values    
+* Specify contrast matrix  
+* Fit linear model using `limma` package  
+* Apply eBayes shrinkage on the variance  
+
+```{r}
+# Create DGEList objects for RF imputed matrices
+d0 <- DGEList(t(m.RF)) 
+
+# Calculate median abundance value for each protein
+m.RF.med <- apply(m.RF, 2, median) %>%     
+  as.matrix()      
+
+# Keep proteins with median abundance value > 5th percentile
+keep <- m.RF.med[m.RF.med > quantile(m.RF.med, 0.05), ] %>% names()
+d0$counts <- d0$counts[keep, ]
+d <- d0
+
+# Create new data frame with filtered proteins
+proteins_keep <- proteins %>% filter(Accession %in% keep)
+
+# Specify grouping info
+group <- metadataProteome$condition %>% 
+  as.factor()
+
+# Specify model matrix
+mm <- model.matrix(~ 0 + group)
+
+# Log2 transform abundance values
+log <- log2(d$counts)   
+
+# Fit linear model with least squares fitting 
+fit <- lmFit(log, mm)
+
+# Create contrast matrix and apply to fit object
+contr <- makeContrasts(KO.CDR2LvsWT = groupKO.CDR2L - groupWT,
+                       KO.CDR2vsWT = groupKO.CDR2 - groupWT,
+                       KO.CDR1vsWT = groupKO.CDR1 - groupWT,
+                       levels = colnames(coef(fit)))
+
+fit <- contrasts.fit(fit, contr)
+
+# Apply eBayes shrinkage on the variance
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+```
+
+
+### Create results tables
+
+```{r}
+# Quick summary of results
+summary.fit <- decideTests(fit)
+summary(summary.fit)
+```
+
+```{r}
+# KO.CDR2L vs WT
+resProteomeCDR2L <- topTable(fit, coef = 1, n = Inf) %>% 
+  mutate(Accession = rownames(.)) %>%                                      
+  arrange(adj.P.Val) %>%
+  # Add gene symbols
+  left_join(x = ., 
+            y = proteins %>% select(Accession, Gene),
+            by = "Accession") %>%  
+  select(Accession, Gene, logFC, adj.P.Val, P.Value, t, AveExpr)
+
+# KO.CDR2 vs WT
+resProteomeCDR2 <- topTable(fit, coef = 2, n = Inf) %>% 
+  mutate(Accession = rownames(.)) %>%                                      
+  arrange(adj.P.Val) %>%
+  left_join(x = ., 
+            y = proteins %>% select(Accession, Gene),
+            by = "Accession") %>%  
+  select(Accession, Gene, logFC, adj.P.Val, P.Value, t, AveExpr)
+
+# KO.CDR1 vs WT
+resProteomeCDR1 <- topTable(fit, coef = 3, n = Inf) %>% 
+  mutate(Accession = rownames(.)) %>%                                      
+  arrange(adj.P.Val) %>%
+  left_join(x = ., 
+            y = proteins %>% select(Accession, Gene),
+            by = "Accession") %>%  
+  select(Accession, Gene, logFC, adj.P.Val, P.Value, t, AveExpr)
+```
+
+
+
+
+
+
+
+
+
+## Preprocessing of secretome dataset
+
+### Read in metadata
+
+```{r}
+metadataSecretome <- read.delim("./rawData/metadataSecretome.txt", header = TRUE, sep = "\t")
+```
+
+
+### Read in and tidy proteomic data
+
+* Select necessary columns  
+* Rename columns  
+* Add gene symbols  
+* Remove proteins labelled as contaminants by Proteome Discoverer  
+* CCM = Conditioned cell media  
+
+```{r}
+proteins_CCM_raw <- read.delim("./rawData/rawDataSecretome.txt", header = TRUE, sep = "\t", dec = ".")
+
+# Select necessary columns
+proteins_CCM <- proteins_CCM_raw %>% 
+  select(Accession, Description, Contaminant, X..Peptides, X..PSMs, starts_with("Abundances..Normalized"))
+
+# Rename columns
+colnames(proteins_CCM) <- c("Accession", "Description", "Contaminant", "n_Peptides", "n_PSMs",
+                            paste("WT", 1:3, sep = "."),
+                            paste("KO.CDR1", 1:3, sep= "."),
+                            paste("KO.CDR2", 1:3, sep = "."),
+                            paste("KO.CDR2L", 1:3, sep = "."))
+
+# Pull the gene symbols from "Description" and assign to new column
+proteins_CCM$Gene <- sub(".*GN=", "", proteins_CCM$Description) %>% 
+  sub(" PE=.*", "", .)
+
+# Remove contaminants 
+proteins_CCM <- proteins_CCM %>% filter(Contaminant == "FALSE")
+```
+
+
+### Filter and impute missing values
+
+* Filter proteins: only proteins that have values (i.e. not `NA`) in all replicates in at least one group will be kept for downstream analysis
+* Create matrix containing only abundance values  
+* Impute missing values with random forest from `missForest` package  
+
+```{r, warning=F}
+# Create a new variable with the number of `NA`s for each protein in the four groups.
+proteins_CCM$na_count_WT <- apply(proteins_CCM,1,function(x) sum(is.na(x[6:8])))
+proteins_CCM$na_count_KO.CDR1 <- apply(proteins_CCM,1,function(x) sum(is.na(x[9:11])))
+proteins_CCM$na_count_KO.CDR2 <- apply(proteins_CCM,1,function(x) sum(is.na(x[12:14])))
+proteins_CCM$na_count_KO.CDR2L <- apply(proteins_CCM,1,function(x) sum(is.na(x[15:17])))
+
+# Filter based on the number of NA's
+proteins_CCM_filt <- proteins_CCM %>% filter(na_count_WT == 0 | na_count_KO.CDR1 == 0 | na_count_KO.CDR2 == 0 | na_count_KO.CDR2L == 0)
+
+# Create a matrix 
+m_CCM <- proteins_CCM_filt %>% 
+  select(6:17) %>% 
+  as.matrix()
+rownames(m_CCM) <- proteins_CCM_filt$Accession
+
+# Impute missing values using random forest 
+m_CCM.RF <- missForest(t(m_CCM))$ximp 
+```
+
+
+### Differential expression analysis
+
+* Exclude lowly expressed proteins (median abundance < 5th percentile)  
+* Specify grouping info  
+* Specify model matrix  
+* Log2 transform abundance values.    
+* Specify contrast matrix  
+* Fit linear model using `limma` package  
+* Apply eBayes shrinkage on the variance  
+
+```{r}
+# Create DGEList objects for RF imputed matrices
+d0_CCM <- DGEList(t(m_CCM.RF)) 
+
+# Calculate median abundance value for each protein
+m_CCM.RF.med <- apply(m_CCM.RF, 2, median) %>%     
+  as.matrix()      
+
+# Keep proteins with median abundance value > 5th percentile
+keep_CCM <- m_CCM.RF.med[m_CCM.RF.med > quantile(m_CCM.RF.med, 0.05), ] %>% names()
+d0_CCM$counts <- d0_CCM$counts[keep_CCM, ]
+d_CCM <- d0_CCM
+
+# Create new data frame with filtered proteins
+proteins_CCM_keep <- proteins_CCM %>% filter(Accession %in% keep_CCM)
+
+# Specify grouping info
+group <- metadataSecretome$condition %>% 
+  as.factor()
+
+# Specify model matrix
+mm <- model.matrix(~ 0 + group)
+
+# Log2 transform abundance values
+log_CCM <- log2(d_CCM$counts)   
+
+# Fit linear model with least squares fitting 
+fit_CCM <- lmFit(log_CCM, mm)
+
+# Create contrast matrix and apply to fit object
+contr_CCM <- makeContrasts(KO.CDR2LvsWT = groupKO.CDR2L - groupWT,
+                           KO.CDR2vsWT = groupKO.CDR2 - groupWT,
+                           KO.CDR1vsWT = groupKO.CDR1 - groupWT,
+                           levels = colnames(coef(fit_CCM)))
+
+fit_CCM <- contrasts.fit(fit_CCM, contr_CCM)
+
+# Apply eBayes shrinkage on the variance
+fit_CCM <- eBayes(fit_CCM, trend = TRUE, robust = TRUE)
+```
+
+
+### Create results tables
+
+```{r}
+# Quick summary of results
+summary_CCM.fit <- decideTests(fit_CCM)
+summary(summary_CCM.fit)
+```
+
+```{r}
+# KO.CDR2L vs WT
+resSecretomeCDR2L <- topTable(fit_CCM, coef = 1, n = Inf) %>% 
+  mutate(Accession = rownames(.)) %>%                                      
+  arrange(adj.P.Val) %>%
+  # Add gene symbols
+  left_join(x = ., 
+            y = proteins_CCM %>% select(Accession, Gene),
+            by = "Accession") %>%  
+  select(Accession, Gene, logFC, adj.P.Val, P.Value, t, AveExpr)
+
+# KO.CDR2 vs WT
+resSecretomeCDR2 <- topTable(fit_CCM, coef = 2, n = Inf) %>% 
+  mutate(Accession = rownames(.)) %>%                                      
+  arrange(adj.P.Val) %>%
+  left_join(x = ., 
+            y = proteins_CCM %>% select(Accession, Gene),
+            by = "Accession") %>%  
+  select(Accession, Gene, logFC, adj.P.Val, P.Value, t, AveExpr)
+
+# KO.CDR1 vs WT
+resSecretomeCDR1 <- topTable(fit_CCM, coef = 3, n = Inf) %>% 
+  mutate(Accession = rownames(.)) %>%                                      
+  arrange(adj.P.Val) %>%
+  left_join(x = ., 
+            y = proteins_CCM %>% select(Accession, Gene),
+            by = "Accession") %>%  
+  select(Accession, Gene, logFC, adj.P.Val, P.Value, t, AveExpr)
+```
+
+
+
+
+
+
+## Save preprocessed data for use in "GSEA.Rmd" and "analysis.Rmd"
+
+```{r}
+# Transcriptome data
+saveRDS(CPM, "./rdsData/CPM.rds")
+saveRDS(countMatrixFiltered, "./rdsData/countMatrixFiltered.rds")
+saveRDS(dds, "./rdsData/dds.rds")
+
+# Proteome and secretome data
+saveRDS(proteins, "./rdsData/proteins.rds")
+saveRDS(proteins_filt, "./rdsData/proteins_filt.rds")
+saveRDS(proteins_keep, "./rdsData/proteins_keep.rds")
+saveRDS(m.RF, "./rdsData/m.RF.rds")
+
+saveRDS(proteins_CCM, "./rdsData/proteins_CCM.rds")
+saveRDS(proteins_CCM_filt, "./rdsData/proteins_CCM_filt.rds")
+saveRDS(proteins_CCM_keep, "./rdsData/proteins_CCM_keep.rds")
+saveRDS(m_CCM.RF, "./rdsData/m_CCM.RF.rds")
+
+# Results tables
+saveRDS(resTranscriptomeCDR2L, "./results/resTranscriptomeCDR2L.rds")
+saveRDS(DESeqResTranscriptomeCDR2L, "./results/DESeqResTranscriptomeCDR2L.rds")
+saveRDS(resTranscriptomeCDR2, "./results/resTranscriptomeCDR2.rds")
+saveRDS(resTranscriptomeCDR1, "./results/resTranscriptomeCDR1.rds")
+
+saveRDS(resProteomeCDR2L, "./results/resProteomeCDR2L.rds")
+saveRDS(resProteomeCDR2, "./results/resProteomeCDR2.rds")
+saveRDS(resProteomeCDR1, "./results/resProteomeCDR1.rds")
+
+saveRDS(resSecretomeCDR2L, "./results/resSecretomeCDR2L.rds")
+saveRDS(resSecretomeCDR2, "./results/resSecretomeCDR2.rds")
+saveRDS(resSecretomeCDR1, "./results/resSecretomeCDR1.rds")
+```
+
+
+

@@ -1,0 +1,1445 @@
+---
+title: "analysis"
+author: "Eirik Tveit Solheim"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = F,
+                      warning = F)
+```
+
+
+## Info
+
+This R markdown document contains the code to reproduce the main results, figures, supplementary figures and supplementary tables presented in the paper.   
+
+
+## Load required packages
+
+```{r}
+library(rmarkdown)
+library(reshape2)
+library(VennDiagram)
+library(ggvenn)
+library(cowplot)
+library(UpSetR)            
+library(WebGestaltR)     
+library(fgsea)      
+library(circlize)
+library(ComplexHeatmap) 
+library(openxlsx)
+library(readxl)
+library(plotrix)
+library(ggpubr)            
+library(tidyverse)         
+```
+
+
+## Load preprocessed data
+
+Data was generated in `preprocess.Rmd` and `GSEA.Rmd`.  
+
+```{r}
+# Sample metadata
+metadataTranscriptome <- read.delim("./rawData/metadataTranscriptome.txt", header = TRUE, sep = "\t")
+metadataProteome <- read.delim("./rawData/metadataProteome.txt", header = TRUE, sep = "\t")
+metadataSecretome <- read.delim("./rawData/metadataSecretome.txt", header = TRUE, sep = "\t")
+
+# Expression data
+CPM <- readRDS("./rdsData/CPM.rds")
+countMatrixFiltered <- readRDS("./rdsData/countMatrixFiltered.rds")
+
+proteins_filt <- readRDS("./rdsData/proteins_filt.rds")
+proteins_keep <- readRDS("./rdsData/proteins_keep.rds")
+m.RF <- readRDS("./rdsData/m.RF.rds")
+
+proteins_CCM_filt <- readRDS("./rdsData/proteins_CCM_filt.rds")
+proteins_CCM_keep <- readRDS("./rdsData/proteins_CCM_keep.rds")
+m_CCM.RF <- readRDS("./rdsData/m_CCM.RF.rds")
+
+# Differential expression results
+resTranscriptomeCDR2L <- readRDS("./results/resTranscriptomeCDR2L.rds")
+resTranscriptomeCDR2 <- readRDS("./results/resTranscriptomeCDR2.rds")
+resTranscriptomeCDR1 <- readRDS("./results/resTranscriptomeCDR1.rds")
+
+resProteomeCDR2L <- readRDS("./results/resProteomeCDR2L.rds")
+resProteomeCDR2 <- readRDS("./results/resProteomeCDR2.rds")
+resProteomeCDR1 <- readRDS("./results/resProteomeCDR1.rds")
+
+resSecretomeCDR2L <- readRDS("./results/resSecretomeCDR2L.rds")
+resSecretomeCDR2 <- readRDS("./results/resSecretomeCDR2.rds")
+resSecretomeCDR1 <- readRDS("./results/resSecretomeCDR1.rds")
+
+# Gene set enrichment analysis results
+res.gsea.CDR2L.transcriptome <- readRDS("./results/res.gsea.CDR2L.transcriptome.rds")
+mainPathways.CDR2L.transcriptome <- readRDS("./results/mainPathways.CDR2L.transcriptome.rds")
+
+res.gsea.CDR2L.proteome <- readRDS("./results/res.gsea.CDR2L.proteome.rds")
+mainPathways.CDR2L.proteome <- readRDS("./results/mainPathways.CDR2L.proteome.rds")
+
+res.gsea.CDR2L.secretome <- readRDS("./results/res.gsea.CDR2L.secretome.rds")
+mainPathways.CDR2L.secretome <- readRDS("./results/mainPathways.CDR2L.secretome.rds")
+
+HeatPathway <- readRDS("./rdsData/HeatPathway.rds")
+```
+
+
+## Colors
+
+```{r}
+colsDatasets <- c("#0073C2FF", "lightblue", "#CD534CFF")
+names(colsDatasets) <- c("Proteome", "Secretome", "Transcriptome")
+
+colsCells <- c("#046094", "#DC98FD", "#60B478", "#E47878")
+names(colsCells) <- c("CDR2L", "CDR2", "CDR1", "WT")
+```
+
+
+# Figures 
+
+## Figure 1A: Venn diagram
+
+```{r}
+venn.diagram(list(Proteome = proteins_keep$Accession, 
+                  Secretome = proteins_CCM_keep$Accession,
+                  Transcriptome = CPM$uniprotswissprot),
+             na = "remove",                                            
+             fill = c("#0073C2FF", "lightblue", "#CD534CFF"), 
+             alpha = c(0.5, 0.5, 0.5), 
+             lwd = 0, 
+             cat.cex = 1.5,
+             cat.dist = c(0.055, 0.055, 0.085),
+             cex = 1.5,
+             imagetype = "png",
+             filename = "./figs/fig_1A.png")
+```
+
+
+## Figure 1B: Proportion of differentially expressed genes
+
+```{r, fig.height=8}
+data.frame(CDR2 = c(resTranscriptomeCDR2 %>% filter(padj < 0.05) %>% nrow() %>% `/` (nrow(resTranscriptomeCDR2)) %>% `*` (100),
+                    resProteomeCDR2 %>% filter(adj.P.Val < 0.05) %>% nrow() %>% `/` (nrow(resProteomeCDR2)) %>% `*` (100),
+                    resSecretomeCDR2 %>% filter(adj.P.Val < 0.05) %>% nrow() %>% `/` (nrow(resSecretomeCDR2)) %>% `*` (100)),
+           CDR2L = c(resTranscriptomeCDR2L %>% filter(padj < 0.05) %>% nrow() %>% `/` (nrow(resTranscriptomeCDR2L)) %>% `*` (100),
+                     resProteomeCDR2L %>% filter(adj.P.Val < 0.05) %>% nrow() %>% `/` (nrow(resProteomeCDR2L)) %>% `*` (100),
+                     resSecretomeCDR2L %>% filter(adj.P.Val < 0.05) %>% nrow() %>% `/` (nrow(resSecretomeCDR2L)) %>% `*` (100)),
+           CDR1 = c(resTranscriptomeCDR1 %>% filter(padj < 0.05) %>% nrow() %>% `/` (nrow(resTranscriptomeCDR1)) %>% `*` (100),
+                    resProteomeCDR1 %>% filter(adj.P.Val < 0.05) %>% nrow() %>% `/` (nrow(resProteomeCDR1)) %>% `*` (100),
+                    resSecretomeCDR1 %>% filter(adj.P.Val < 0.05) %>% nrow() %>% `/` (nrow(resSecretomeCDR1)) %>% `*` (100)),
+           set = c("Transcriptome", "Proteome", "Secretome")) %>% 
+  reshape2::melt(.) %>% 
+  mutate(set = factor(set, levels = c("Transcriptome", "Proteome", "Secretome"))) %>% 
+  ggplot(., aes(x = set, y = value)) +
+  geom_point(aes(col = variable), size = 3.5) +
+  geom_path(aes(group = variable, col = variable), linewidth = 1.8) +
+  ylab("% differentially expressed genes") +
+  xlab("") +
+  scale_color_manual(values=colsCells) +               
+  theme_cowplot() +
+  theme(legend.title=element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15))
+
+ggsave("./figs/fig_1B.png",
+       width = 2560, 
+       height = 1440, 
+       units = "px")
+```
+
+
+## Figure 1C: UpSet plots
+
+```{r, fig.height=8}
+# Transcriptome
+UpSetTranscriptome <- list(
+  CDR2L = resTranscriptomeCDR2L %>% filter(padj < 0.05) %>% pull(gene_name),
+  CDR2 = resTranscriptomeCDR2 %>% filter(padj < 0.05) %>% pull(gene_name),
+  CDR1 = resTranscriptomeCDR1 %>% filter(padj < 0.05) %>% pull(gene_name))
+
+png(file = "./figs/fig_1C_transcriptome.png", width = 4800, height = 3000, units = "px", res = 600)
+UpSetR::upset(fromList(UpSetTranscriptome), sets.bar.color = "#56B4E9",
+              order.by = "freq", empty.intersections = "on",
+              queries = list(list(query = intersects, params = list("CDR2L"), color = "#046094", active = T),             
+                             list(query = intersects, params = list("CDR2L", "CDR2", "CDR1"), color = "orange", active = T)),
+              sets.x.label = "# DE genes",
+              mainbar.y.label = "Gene Intersections",
+              point.size = 4.0, line.size = 1.5,
+              text.scale = c(2, 1.5, 1.2, 1.75, 2.5, 2.75))
+dev.off()
+
+# Proteome
+UpSetProteome <- list(
+  CDR2L = resProteomeCDR2L %>% filter(adj.P.Val < 0.05) %>% pull(Gene),
+  CDR2 = resProteomeCDR2 %>% filter(adj.P.Val < 0.05) %>% pull(Gene),
+  CDR1 = resProteomeCDR1 %>% filter(adj.P.Val < 0.05) %>% pull(Gene))
+
+png(file = "./figs/fig_1C_proteome.png", width = 4800, height = 3000, units = "px", res = 600)
+UpSetR::upset(fromList(UpSetProteome), sets.bar.color = "#56B4E9", sets = c("CDR2L", "CDR2", "CDR1"),
+              order.by = "freq", empty.intersections = "on",
+              queries = list(list(query = intersects, params = list("CDR2L"), color = "#046094", active = T),              
+                             list(query = intersects, params = list("CDR2L", "CDR2", "CDR1"), color = "orange", active = T)),
+              sets.x.label = "# DE genes",
+              mainbar.y.label = "Gene Intersections",
+              point.size = 4.0, line.size = 1.5,
+              text.scale = c(2, 1.5, 1.2, 1.75, 2.5, 2.75))
+dev.off()
+
+# Secretome
+UpSetSecretome <- list(
+  CDR2L = resSecretomeCDR2L %>% filter(adj.P.Val < 0.05) %>% pull(Gene),
+  CDR2 = resSecretomeCDR2 %>% filter(adj.P.Val < 0.05) %>% pull(Gene),
+  CDR1 = resSecretomeCDR1 %>% filter(adj.P.Val < 0.05) %>% pull(Gene))
+
+png(file = "./figs/fig_1C_secretome.png", width = 4800, height = 3000, units = "px", res = 600)
+UpSetR::upset(fromList(UpSetSecretome), sets.bar.color = "#56B4E9",
+              order.by = "freq", empty.intersections = "on",
+              queries = list(list(query = intersects, params = list("CDR2L"), color = "#046094", active = T),           
+                             list(query = intersects, params = list("CDR2L", "CDR2", "CDR1"), color = "orange", active = T)),
+              sets.x.label = "# DE genes",
+              mainbar.y.label = "Gene Intersections",
+              point.size = 4.0, line.size = 1.5,
+              text.scale = c(2, 1.5, 1.2, 1.75, 2.5, 2.75))
+dev.off()
+```
+
+
+## Figure 1D: PCA plots
+
+```{r}
+# Transcriptome
+pcaTranscriptome <- countMatrixFiltered %>% 
+  select(1:12) %>% 
+  t() %>% 
+  prcomp(., scale = TRUE, center = TRUE)
+
+pcaTranscriptome2 <- pcaTranscriptome$x %>% 
+  as.data.frame() %>% 
+  mutate(sample_id = rownames(.)) %>%                   
+  left_join(., metadataTranscriptome, by = "sample_id") %>% 
+  # rename
+  mutate(condition = case_when(
+  condition == "WT" ~ "WT",
+  condition == "KO.CDR1" ~ "CDR1",
+  condition == "KO.CDR2" ~ "CDR2",
+  condition == "KO.CDR2L" ~ "CDR2L")) %>% 
+  mutate(condition = fct_relevel(condition, "CDR1", "CDR2", "CDR2L", "WT")) %>%
+  mutate(my_condition = ifelse(condition == "CDR2L", 1, 0))
+
+pcaTranscriptome3 <- summary(pcaTranscriptome)
+percVarTranscriptome <- round((pcaTranscriptome3$importance[2, c(1:5)] * 100), 1)
+
+lm(PC1 ~ my_condition, pcaTranscriptome2) %>% summary()
+
+ggplot(pcaTranscriptome2, aes(x = PC1, y = PC2, col = condition)) +
+  geom_point(size = 6) +
+  xlab(paste0("PC1: ", percVarTranscriptome[1], "% variance")) +
+  ylab(paste0("PC2: ", percVarTranscriptome[2], "% variance")) +
+  theme_cowplot() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20)) +
+  scale_color_manual(values=colsCells)               
+  
+
+ggsave("./figs/fig_1D_transcriptome.png",
+       width = 2240, 
+       height = 1440, 
+       units = "px")
+
+
+# Proteome
+pcaProteome <- prcomp(m.RF, scale = TRUE, center = TRUE)
+
+pcaProteome2 <- pcaProteome$x %>% 
+  as.data.frame() %>% 
+  mutate(sample_id = rownames(.)) %>%                   
+  left_join(., metadataProteome, by = "sample_id") %>% 
+  mutate(condition = case_when(
+  condition == "WT" ~ "WT",
+  condition == "KO.CDR1" ~ "CDR1",
+  condition == "KO.CDR2" ~ "CDR2",
+  condition == "KO.CDR2L" ~ "CDR2L")) %>% 
+  mutate(condition = fct_relevel(condition, "CDR1", "CDR2", "CDR2L", "WT")) %>%
+  mutate(my_condition = ifelse(condition == "CDR2L", 1, 0))
+
+pcaProteome3 <- summary(pcaProteome)
+percVarProteome <- round((pcaProteome3$importance[2, c(1:5)] * 100), 1)
+
+lm(PC1 ~ my_condition, pcaProteome2) %>% summary()
+
+ggplot(pcaProteome2, aes(x = PC1, y = PC2, col = condition)) +
+  geom_point(size = 6) +
+  xlab(paste0("PC1: ", percVarProteome[1], "% variance")) +
+  ylab(paste0("PC2: ", percVarProteome[2], "% variance")) +
+  theme_cowplot() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20)) +
+  scale_color_manual(values=colsCells)
+
+ggsave("./figs/fig_1D_proteome.png",
+       width = 2240, 
+       height = 1440, 
+       units = "px")
+
+
+# Secretome
+pcaSecretome <- prcomp(m_CCM.RF, scale = TRUE, center = TRUE)
+
+pcaSecretome2 <- pcaSecretome$x %>% 
+  as.data.frame() %>% 
+  mutate(sample_id = rownames(.)) %>%                   
+  left_join(., metadataSecretome, by = "sample_id") %>% 
+  mutate(condition = case_when(
+  condition == "WT" ~ "WT",
+  condition == "KO.CDR1" ~ "CDR1",
+  condition == "KO.CDR2" ~ "CDR2",
+  condition == "KO.CDR2L" ~ "CDR2L")) %>% 
+  mutate(condition = fct_relevel(condition, "CDR1", "CDR2", "CDR2L", "WT")) %>%
+  mutate(my_condition = ifelse(condition == "CDR2L", 1, 0))
+
+pcaSecretome3 <- summary(pcaSecretome)
+percVarSecretome <- round((pcaSecretome3$importance[2, c(1:5)] * 100), 1)
+
+lm(PC1 ~ my_condition, pcaSecretome2) %>% summary()
+
+ggplot(pcaSecretome2, aes(x = PC1, y = PC2, col = condition)) +
+  geom_point(size = 6) +
+  xlab(paste0("PC1: ", percVarSecretome[1], "% variance")) +
+  ylab(paste0("PC2: ", percVarSecretome[2], "% variance")) +
+  theme_cowplot() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20)) +
+  scale_color_manual(values=colsCells)
+
+ggsave("./figs/fig_1D_secretome.png",
+       width = 2240, 
+       height = 1440, 
+       units = "px")
+```
+
+
+## Figure 2A: Transcriptome GSEA bar plot
+
+```{r, fig.height = 10}
+# Collapsed gene sets
+GSEA.plot.transcriptome <- mainPathways.CDR2L.transcriptome %>%
+  as_tibble() %>% 
+  mutate(direction = ifelse(NES < 0, "down", "up")) %>% 
+  group_by(direction) %>% 
+  dplyr::slice(1:15) %>%                                     
+  # Limit number of characters
+  mutate(pathway = case_when(
+    nchar(pathway) > 40 ~ paste0(substr(pathway, 1, 40), "..."),
+    TRUE ~ pathway)) %>% 
+  dplyr::rename(FDR = padj)
+
+GSEA.plot.transcriptome %>%  
+  ggplot(aes(NES, fct_reorder(pathway, NES), fill = direction)) +
+  geom_col(aes(alpha = FDR)) +
+  geom_text(aes(x = ifelse(NES < 0, 0.05, -0.05), label = pathway), hjust = ifelse(GSEA.plot.transcriptome$NES < 0, 0, 1), size = 2) +
+  ylab("") +
+  xlab("Normalized Enrichment Score") +
+  theme_cowplot() +
+  theme(
+    legend.position = "bottom",
+    legend.key.height= unit(10, 'pt'),
+    legend.key.width= unit(10, 'pt'),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=10),
+    panel.grid = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_line(),
+    axis.ticks.y = element_blank(),
+    axis.ticks.length.x = unit(0.5, "line")) +
+  scale_fill_manual(values = c("navyblue", "orange")) +
+  scale_alpha(range = c(1, 0.25)) +
+  guides(fill="none") +
+  coord_cartesian(xlim = c(-2.5, 2.5))
+
+ggsave("./figs/fig_2A.png",
+       width = 3000, 
+       height = 4400, 
+       units = "px", 
+       dpi = 600)
+```
+
+
+## Figure 2B: Proteome GSEA bar plot
+
+```{r, fig.height = 10}
+# Collapsed gene sets
+GSEA.plot.proteome <- mainPathways.CDR2L.proteome %>%
+  as_tibble() %>% 
+  mutate(direction = ifelse(NES < 0, "down", "up")) %>% 
+  group_by(direction) %>% 
+  dplyr::slice(1:15) %>%                                     
+  # Limit number of characters
+  mutate(pathway = case_when(
+    nchar(pathway) > 40 ~ paste0(substr(pathway, 1, 40), "..."),
+    TRUE ~ pathway)) %>% 
+  dplyr::rename(FDR = padj)
+
+GSEA.plot.proteome %>%  
+  ggplot(aes(NES, fct_reorder(pathway, NES), fill = direction)) +
+  geom_col(aes(alpha = FDR)) +
+  geom_text(aes(x = ifelse(NES < 0, 0.05, -0.05), label = pathway), hjust = ifelse(GSEA.plot.proteome$NES < 0, 0, 1), size = 2) +
+  ylab("") +
+  xlab("Normalized Enrichment Score") +
+  theme_cowplot() +
+  theme(
+    legend.position = "bottom",
+    legend.key.height= unit(10, 'pt'),
+    legend.key.width= unit(10, 'pt'),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=10),
+    panel.grid = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_line(),
+    axis.ticks.y = element_blank(),
+    axis.ticks.length.x = unit(0.5, "line")) +
+  scale_fill_manual(values = c("navyblue", "orange")) +
+  scale_alpha(range = c(1, 0.25)) +
+  guides(fill="none") +
+  coord_cartesian(xlim = c(-2.5, 2.5))
+
+ggsave("./figs/fig_2B.png",
+       width = 3000, 
+       height = 4400, 
+       units = "px", 
+       dpi = 600)
+```
+
+
+## Figure 2C: Secretome GSEA bar plot
+
+```{r, fig.height = 10}
+# Collapsed gene sets
+GSEA.plot.secretome <- mainPathways.CDR2L.secretome %>%
+  as_tibble() %>% 
+  mutate(direction = ifelse(NES < 0, "down", "up")) %>% 
+  group_by(direction) %>% 
+  dplyr::slice(1:15) %>%                                     
+  # Limit number of characters
+  mutate(pathway = case_when(
+    nchar(pathway) > 40 ~ paste0(substr(pathway, 1, 40), "..."),
+    TRUE ~ pathway)) %>% 
+  dplyr::rename(FDR = padj)
+
+GSEA.plot.secretome %>%  
+  ggplot(aes(NES, fct_reorder(pathway, NES), fill = direction)) +
+  geom_col(aes(alpha = FDR)) +
+  geom_text(aes(x = ifelse(NES < 0, 0.05, -0.05), label = pathway), hjust = ifelse(GSEA.plot.secretome$NES < 0, 0, 1), size = 2) +
+  ylab("") +
+  xlab("Normalized Enrichment Score") +
+  theme_cowplot() +
+  theme(
+    legend.position = "bottom",
+    legend.key.height= unit(10, 'pt'),
+    legend.key.width= unit(10, 'pt'),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=10),
+    panel.grid = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_line(),
+    axis.ticks.y = element_blank(),
+    axis.ticks.length.x = unit(0.5, "line")) +
+  scale_fill_manual(values = c("navyblue", "orange")) +
+  scale_alpha(range = c(1, 0.25)) +
+  guides(fill="none") +
+  coord_cartesian(xlim = c(-2.5, 2.5))
+
+ggsave("./figs/fig_2C.png",
+       width = 3000, 
+       height = 4400, 
+       units = "px", 
+       dpi = 600)
+```
+
+
+## Figure 2D: Heatmap of enriched gene sets
+
+```{r, fig.height=10, fig.width=14}
+# Set colors
+col_fun <- circlize::colorRamp2(c(-2.25, 0, 2.25), c("navyblue", "white", "orange"))
+
+# Top annotation
+top_ha = ComplexHeatmap::rowAnnotation(Dataset = c("Proteome", "Secretome", "Transcriptome"),
+                                       col = list(Dataset = colsDatasets),
+                                       show_annotation_name = F,
+                                       show_legend = F,
+                                       simple_anno_size = unit(1, "mm"))
+# Heatmap
+ht1 <- HeatPathway %>% 
+  t() %>% 
+  ComplexHeatmap::Heatmap(.,
+                          rect_gp = grid::gpar(col = "black", lwd = 0.5),
+                          col = col_fun,
+                          cluster_columns = T,
+                          column_dend_reorder = T,
+                          row_dend_reorder = F,
+                          show_column_dend = F,
+                          show_row_dend = F,
+                          show_column_names = T, 
+                          left_annotation = top_ha,
+                          row_names_gp = grid::gpar(fontsize = 5),
+                          column_names_gp = grid::gpar(fontsize = 4),
+                          row_names_side = "left",                
+                          na_col = "white",                               
+                          column_names_rot = 45,
+                          width = nrow(HeatPathway)*unit(3.5, "mm"),
+                          height = ncol(HeatPathway)*unit(3.5, "mm"),
+                          heatmap_legend_param = list(
+                            title = "NES",
+                            direction = "vertical",
+                            legend_height = unit(4, "mm"),
+                            labels_gp = gpar(fontsize = 4),
+                            at = c(-2.5, 0, 2.5),
+                            title_gp = gpar(fontsize = 4)))# %>% 
+  #ComplexHeatmap::draw(., padding = unit(c(2, 20, 2, 2), "mm"))
+
+# Export image
+png(file = "./figs/fig_2D.png", width = 4400, height = 3000, units = "px", res = 600)
+draw(ht1)
+dev.off()
+```
+
+
+## Figure 3: Heatmap of ribosome biogenesis factors
+
+The genes were annotated according to the tables in [Ribosome biogenesis factors — from names to functions](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10068337/).  
+
+```{r}
+ribo_annot <- list(
+  rDNA_transcription = c("POLR2E", "POLR2F", "POLR2H", "POLR2L", "POLR2K", "POLR1C", "POLR1D", "POLR1A", "POLR1B", "POLR1F", "POLR1H", "POLR1E", "POLR1G",
+                         "TBP", "UBF", "RRN3", "TAF1C", "TAF1B", "TAF1A", "TAF1D", "TAF12", "H3C1", "H4C1", "TOP1", "TOP2A", "CK2A1", "CK2A2", "CK2N",
+                         "SPT4H", "SPT5H", "PAF1", "CTR9", "WDR61", "RFT1", "LEO1", "SUPT16H", "SSRP1","TTF1", "CTCF", "MYC", "MAX", "NOLC1", "BRD2", "BRD4", 
+                         "KAT7", "JADE3", "LYAR", "SIRT7", "FBL", "UTP4", "WDR43", "UTP5", "HEART1", "UTP10", "UTP15", "UTP17", "WDR75"),
+  rRNA_modificiation = c("FBL", "NOP56", "NOP58", "SNU13", "U3-55K", "DKC", "NHP2", "NOP10", "GAR1", "TSR3", "EMG1", "NAT10", "WBSCR22", "DIMT1", "NML", 
+                        "RRP8", "NSUN5", "NOP2", "ZCCHC4", "METTL5", "TRMT112"),
+  rRNA_processing = c("UTP23", "UTP24", "NOB1", "RMRP", "POP1", "RPP38", "RPP29", "POP5", "RPP25", "RPP20", "RPP14", "RPP30", "RPP21", "RPP40", "LAS1L", "XRN2",
+                          "NOL12", "DOS3", "EXOSC10", "EXOSC1", "EXOSC2", "EXOSC3", "EXOSC4", "EXOSC5", "EXOSC6", "EXOSC7", "EXOSC8", "EXOSC9", "MTR4", "PAPD5",
+                          "PAPD7", "ZCCHC7", "ZCCHC8", "MPP6", "C1D", "RBM7", "REXO5", "REXO2", "REXO1", "CCR4", "PARN", "TUT4", "TUT7", "ISG20L2", "ERI1"),
+  chaperons = c("GRWD1", "HEATR3", "AAMP", "BCCIP", "PDCD2", "NPM", "AK", "CINAP", "AROS", "TSR2"),
+  small_subunit_processome = c("UTP4", "CIRH1A", "UTP5", "WDR43", "NOL11", "UTP10", "HEATR1", "UTP15", "UTP17", "WDR75", "MYBBP1A", "PWP2", "UTP6", "UTP12", "WDR3", "TBL3",
+                               "UTP18", "WDR36", "DDX21", "NOP2", "FBL", "NOP56", "NOP58", "SNU13", "U3-55K", "U3IP2", "MPHOSPH10", "IMP3", "IMP4", "RRP7A", "NOL6", "CK2A1",
+                               "CK2A2", "CK2N", "RRP36", "WDR46", "UTP14A", "WDSOF1", "RCL1", "BMS1", "ENP1", "BYSL", "NOP14", "NOC4L", "EMG1", "AATF", "NGDN", "NOL10",
+                               "XRN2", "NKRF", "DHX15", "RSL1D1", "UTP11", "NOL7", "TDIF2", "UTP3", "UTP24", "ESF1", "ABT1", "DDX49", "DDX10", "DDX47", "SRFBP1", "PDCD11",
+                               "KRR1", "DDX52", "DEF", "C1orf107", "KRI1", "UTP23", "RBM19", "DDX48", "EIF4A3", "NOM1", "CMS1", "NOP9", "UTP20", "NAT10", "C1orf131",
+                               "PNO1", "DIM2", "RRP12", "NOB1", "DHX37", "NML", "RRP8", "FAM207A", "C21orf70", "MYBBP1A", "WBSCR22", "NIP7", "FTSJ3"),
+  "40S_maturation_nucleoplasmic" = c("TSR1", "NOB1", "CSNK1D", "CSNK1E", "RIOK1", "RIO1", "RIOK2", "RIO2", "LTV1", "PARN", "FAM207A", "C21orf70"),
+  nuclear_export = c("XPO1", "CRM1", "PNO1", "DIM2", "RIOK2", "LTV1", "PDCD2L", "RANBP3", "FAM207A", "C21orf70", "RRP12", "NXF1", "NXT1", "NMD3", "PA2G4", "EBP1", "ZNF593",
+                     "SRSF1", "RAE1", "XPO5"),
+  "40S_maturation_cytoplasmic" = c("ENP1", "BYSL", "LTV1", "TSR1", "DIMT1", "RRP12", "PNO1", "DIM2", "NOB1", "CSNK1D", "CSNK1E", "RIOK1", "RIO1", "RIOK2", "RIO2", "RIOK3", 
+                                     "DHX15", "SON", "PINX1", "HBS1", "PELO", "ABCE1", "EIF5B", "USP16", "LRRC47", "EIF1AD"),
+  "60S_maturation_nucleolar" = c("PDCD11", "CEBPZ", "NOC2L", "NIR", "URB1", "URB2", "DDX51", "DDX5", "DDX31", "DDX24", "WDR74", "RPF1", "MAK16", "RRP1", "RBM28", "PUM3", "RRP15",
+                               "PPAN", "SURF6","METTL18", "GNL2", "NOP16", "GLTSCR2", "NOP53", "FTSJ3", "MRT4", "MRTO4", "N6AMT1", "LLPH", "ZNF593", "PA2G4", "EBP1", "NVL2",
+                               "MDN1", "LAS1L", "NOL9", "PES1", "BOP1", "WDR12", "DDX27", "MK167IP", "RLP7", "PWP1", "RBM34", "DDX18", "BRIX1", "EBNA1BP2", 
+                               "NIP7", "NOP2", "RRS1", "BXDC1", "DDX55", "PAK1IP1", "DDX54", "GNL3", "RLP24", "RSL24D1", "EIF6", "GTPBP4", "NSA2", "NLE1", "MYBBP1A", "NOC3L"),
+  "60S_formation_of_5S_RNP" = c("REX05", "REX02", "REXO1", "TFIIIA", "HEATR3", "RRS1", "BXDC1"),
+  "60S_maturation_nucleoplasmic" = c("CCDC86", "SDAD1", "PELP1", "TEX10", "WDR18", "MDN1", "SENP3", "NF45", "ILF2", "NF90", "ILF3", "NMD3"),
+  "60S_maturation_cytoplasmic" = c("SPATA5", "SPATA5L", "CINP", "C1orf109", "RLP24", "RSL24D1", "ZNF593", "GNL3", "LLPH", "TMA16", "NSA2", "GTPBP4", "NOG1", "PA2G4", "EBP1",
+                                     "ZNF622", "DNAJC21", "HSPA1A", "HSPA1B", "MRT4", "MRTO4", "DUSP12", "EFL1", "EFTUD1", "SBDS", "EIF6", "LSG1", "AAMP", "NMD3"),
+  other_ribosome_biogenesis_factors = c("NPM", "NCL", "DDX1", "HECTD1", "USP36", "UBR5", "VPRBP"))
+```
+
+Extract all genes annotated to GOBP_RIBOSOME_BIOGENESIS
+
+```{r}
+# Load gene sets from Molecular Signatures Database
+GOBP_pathways <- gmtPathways("./refData/c5.go.bp.v2022.1.Hs.symbols.gmt")
+
+# All genes annotated to GOBP_RIBOSOME_BIOGENESIS (n = 310)
+RIBO_BIOGENESIS <- GOBP_pathways["GOBP_RIBOSOME_BIOGENESIS"] %>% unlist(use.names = F)
+```
+
+```{r, fig.height=14, fig.width=9}
+# Combine transcriptomic and proteomic data 
+CDR2L.prot.RNA <- resProteomeCDR2L %>% 
+  inner_join(x = .,
+             y = resTranscriptomeCDR2L, 
+             by = c("Accession" = "uniprotswissprot")) %>%
+  na.omit()
+
+# Genes annotated to GOBP_RIBOSOME_BIOGENESIS significantly differentially expressed in CDR2L proteome and/or transcriptome
+RiboBio <- CDR2L.prot.RNA %>% 
+  filter(Gene %in% RIBO_BIOGENESIS) %>%             # n = 255
+  filter(adj.P.Val < 0.05 | padj < 0.05) %>%        # n = 206
+  distinct(Gene, .keep_all = TRUE) %>%             
+  select(Gene, logFC, log2FoldChange, adj.P.Val, padj) %>% 
+  rename(logFC.Proteome = logFC, logFC.Transcriptome = log2FoldChange, padj.Proteome = adj.P.Val, padj.Transcriptome = padj)
+
+annot_df <- RiboBio %>% 
+  mutate(
+    Sig.Transcriptome = case_when(
+      padj.Transcriptome < 0.05 ~ "Sig. transcriptome"),
+    Sig.Proteome = case_when(
+      padj.Proteome < 0.05 ~ "Sig. proteome"),
+	  SSU_processome = case_when(
+	    Gene %in% ribo_annot$small_subunit_processome ~ "SSU_processome"),
+	  rDNA_transcription = case_when(
+	    Gene %in% ribo_annot$rDNA_transcription ~ "rDNA_transcription"),
+	  rRNA_processing = case_when(
+	    Gene %in% ribo_annot$rRNA_modificiation ~ "rRNA_processing",
+	    Gene %in% ribo_annot$rRNA_processing ~ "rRNA_processing"),
+	  "40S_maturation" = case_when(
+	    Gene %in% ribo_annot$"40S_maturation_nucleoplasmic" ~ "40S_maturation",
+	    Gene %in% ribo_annot$"40S_maturation_cytoplasmic" ~ "40S_maturation"),
+	  "60S_maturation" = case_when(
+	    Gene %in% ribo_annot$"60S_maturation_nucleolar" ~ "60S_maturation",
+	    Gene %in% ribo_annot$"60S_formation_of_5S_RNP" ~ "60S_maturation",
+	    Gene %in% ribo_annot$"60S_maturation_nucleoplasmic" ~ "60S_maturation",
+	    Gene %in% ribo_annot$"60S_maturation_cytoplasmic" ~ "60S_maturation"),
+	  Chaperon = case_when(
+	    Gene %in% ribo_annot$chaperons ~ "chaperons"),
+	  Nuclear_export = case_when(
+	    Gene %in% ribo_annot$nuclear_export ~ "nuclear_export"),
+	  Other_biogenesis_factor = case_when(
+	    Gene %in% ribo_annot$other_ribosome_biogenesis_factors ~ "other_ribosome_biogenesis_factors"))
+
+# Row annotation
+row_ha = ComplexHeatmap::rowAnnotation(
+  Sig.Transcriptome = annot_df$Sig.Transcriptome,
+  Sig.Proteome = annot_df$Sig.Proteome,
+  SSU_processome = annot_df$SSU_processome,
+  rDNA_transcription = annot_df$rDNA_transcription,
+  rRNA_processing = annot_df$rRNA_processing,
+  "40S_maturation" = annot_df$"40S_maturation",
+  "60S_maturation" = annot_df$"60S_maturation",
+  Ribosomal_protein_subunit = annot_df$Ribosomal_protein_subunit,
+  col = list(
+    Sig.Transcriptome = c(
+      "Sig. transcriptome" = "black"),
+    Sig.Proteome = c(
+      "Sig. proteome" = "black"),
+    SSU_processome = c(
+      "SSU_processome" = "#12086f"),
+    rDNA_transcription = c(
+      "rDNA_transcription" = "#4361ee"),
+    rRNA_processing = c(
+      "rRNA_processing" = "#4895ef"),
+    "40S_maturation" = c(
+      "40S_maturation" = "#4cc9f0"),
+    "60S_maturation" = c(
+      "60S_maturation" = "lightblue")),
+  na_col = "transparent",
+  show_annotation_name = F,
+  show_legend = T,
+  gp = gpar(col = "darkgray", lwd = 0.5))
+
+# Column annotation
+top_ha = ComplexHeatmap::HeatmapAnnotation(Dataset = c("Proteome", "Transcriptome"),
+                                           col = list(Dataset = colsDatasets),
+                                           show_annotation_name = F,
+                                           show_legend = F,
+                                           simple_anno_size = unit(1, "mm"))
+# Colors
+col_fun2 <- circlize::colorRamp2(c(-1, 0, 1), c("navyblue", "white", "orange"))
+
+# Heatmap
+ht2 <- RiboBio %>% 
+  column_to_rownames(var = "Gene") %>% 
+  select(logFC.Proteome, logFC.Transcriptome) %>% 
+  ComplexHeatmap::Heatmap(.,
+                          left_annotation = row_ha[,1:2],
+                          right_annotation = row_ha[,3:7],
+                          top_annotation = top_ha,
+                          #rect_gp = grid::gpar(col = "white", lwd = 1),   # white border between cells
+                          col = col_fun2,
+                          cluster_rows = T,
+                          row_dend_reorder = T,
+                          show_row_dend = F,
+                          show_column_dend = F,
+                          show_column_names = F,
+                          row_names_gp = grid::gpar(fontsize = 3),
+                          width = ncol(RiboBio %>% select(2,3))*unit(15, "mm"),
+                          name = "Log2 Fold Change") 
+
+# Export image
+png(file = "./figs/fig_3.png", width = 3300, height = 4400, units = "px", res = 600)
+draw(ht2)
+dev.off()
+```
+
+
+## Figure 4A: Functionally organized networks of enriched GO terms
+
+Create input used to visualize the results of the GSEA as a functionally organized network in Cytoscape.  
+Tab-delimited file with the enriched GO term IDs and associated adjusted p-values.  
+
+```{r}
+clueGO_proteome <- res.gsea.CDR2L.proteome %>% 
+  ungroup() %>% 
+  select(GO_Term_ID, padj) %>% 
+  na.omit()
+write.table(clueGO_proteome, file = "./cytoscape/clueGO_proteome.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+
+## Figure 4B: Heatmap of cell cycle-related genes
+
+```{r, fig.height=14}
+GenesOfInterest <- c(
+  # CDKs
+  "CDK2", "CDK4", "CDK6",
+  # Cyclins
+  "CCNA2", "CCNB1", "CCNB2", 
+  # Cyclin-dependent kinase inhibitor
+  "CDKN1A", "CDKN1B", "CDKN2A",
+  # Cell division cycle proteins
+  "CDC27", "CDC20", "CDC23", "CDC7", 
+  # G1/2 (MCM complex)
+  "MCM4", "MCM5", "MCM7", "MCM3", "MCM2",
+  # Transcription factors
+  "E2F4", "MYC", "ETS1", "FOSL1", "FOSB", "JUNB",
+  # Key regulators
+  "RB1", "RBL1", "RBL2", "MKI67", 
+  # DNA damage
+  "CHEK1", "TOP2A", "TOP2", "TOP3B",
+  # G2/M
+ "ESPL1", "MAD2L2", "PLK1",
+  # chromosomal passenger complex (CPC)
+  "AURKB", "AURKA", "INCENP", "CDCA8",
+  # centromeric proteins, kinetochore function and chromosome segregation
+  "CENPF", "CENPE", "CENPM", "CENPU",
+  # Regulator of chromosome structure during mitosis
+  "CDCA2", "CDCA5",
+  # condensing complex
+  "NCAPH", "NCAPG", "NCAPD2", "NCAPD3", "NCAPG2",
+  # regulators of cell cycle
+  "BUB1B", "BUB1")
+
+# Order of heatmap
+heatmapOrder = c(
+  # Cyclin-dependent kinase inhibitor
+  "CDKN1B", "CDKN2A",
+  # CDKs
+  "CDK4", "CDK6", 
+  # Cyclins
+  "CCNA2", "CCNB1", "CCNB2",
+  # centromere proteins
+  "CENPE", "CENPF", "CENPM", "CENPU",
+  # Regulators of the cell cycle
+  "AURKB", "BUB1", "BUB1B", "CHEK1", "MKI67", "RB1", "E2F4",
+  # MCM complex
+  "MCM2", "MCM3", "MCM4", "MCM5", "MCM7",
+  # Condensing complex
+  "NCAPD2", "NCAPG", "NCAPG2", "NCAPH", 
+  # chromosomal passenger complex (CPC)
+  "CDCA8", "INCENP",
+  # Others
+  "TOP2A", "TOP3B", "CDCA5", "ESPL1", "CDC7")
+
+# Set colors
+cellCycleCols = c("Proteome" = "#0073C2FF", "Transcriptome" = "#CD534CFF")
+col_fun3 <- circlize::colorRamp2(c(-2, 0, 2), c("navyblue", "white", "orange"))
+
+# Top annotation
+top_cellCycle = ComplexHeatmap::HeatmapAnnotation(Dataset = c("Proteome", "Transcriptome"),
+                                            col = list(Dataset = cellCycleCols),
+                                            simple_anno_size = unit(1, "mm"),
+                                            show_annotation_name = F,
+                                            show_legend = F)
+
+# Heatmap 
+ht3 <- resTranscriptomeCDR2L %>% 
+  select(uniprotswissprot, gene_name, log2FoldChange, padj) %>% 
+  full_join(x = .,
+            y = resProteomeCDR2L %>% select(Accession, Gene, logFC, adj.P.Val),
+            by = c("uniprotswissprot" = "Accession")) %>% 
+  filter(gene_name %in% GenesOfInterest & "Q8N726" != uniprotswissprot) %>% 
+  filter(adj.P.Val < 0.05 & padj < 0.05) %>%                                 
+  select(gene_name, logFC, log2FoldChange) %>% 
+  dplyr::rename(Proteome = logFC, Transcriptome = log2FoldChange) %>%
+  arrange(desc(gene_name)) %>% 
+  mutate(gene_name = factor(gene_name, levels = gene_name)) %>% 
+  column_to_rownames("gene_name") %>% 
+  as.matrix() %>% 
+  ComplexHeatmap::Heatmap(.,
+                          rect_gp = grid::gpar(col = "black", lwd = 0.5),
+                          col = col_fun3,
+                          row_order = heatmapOrder,
+                          cluster_rows = F,
+                          row_dend_reorder = T,
+                          show_column_dend = FALSE,
+                          show_row_dend = FALSE,
+                          top_annotation = top_cellCycle,
+                          show_column_names = F,                          
+                          row_names_gp = grid::gpar(fontsize = 6),        
+                          row_names_side = "left",                        
+                          na_col = "white",                               
+                          width = ncol(.)*unit(5, "mm"),
+                          height = nrow(.)*unit(5, "mm"),
+                          heatmap_legend_param = list(
+                            title = "Log2 Fold Change",
+                            #legend_height = unit(4, "mm"),
+                            labels_gp = gpar(fontsize = 5),
+                            title_gp = gpar(fontsize = 6),
+                            title_position = "leftcenter-rot"))   
+
+# Export image
+png(file = "./figs/fig_4B.png", width = 2200, height = 4400, units = "px", res = 600)
+draw(ht3)
+dev.off()
+```
+
+
+## Figure 5A: Venn diagram showing the number of shared and unique differentially expressed genes between transcriptome and proteome
+
+```{r}
+venn.diagram(list(Transcriptome = resTranscriptomeCDR2L %>% filter(padj < 0.05) %>% pull(uniprotswissprot),
+                  Proteome = resProteomeCDR2L %>% filter(adj.P.Val < 0.05) %>% pull(Accession)),
+             na = "remove",                                           
+             fill = c("#CD534CFF", "#0073C2FF"), 
+             alpha = c(0.5, 0.5), 
+             lwd = 0, 
+             margin = 0.05,
+             cat.cex = 1.5,
+             cex = 1.5,
+             imagetype = "png",
+             filename = "./figs/fig_5A.png")
+```
+
+
+## Figure 5B: Scatter plot of log2 fold changes in transcriptome and proteome
+
+```{r, fig.height=8}
+# Combine transcriptomic and proteomic data 
+CDR2L.prot.RNA <- resProteomeCDR2L %>% 
+  inner_join(x = .,
+             y = resTranscriptomeCDR2L, 
+             by = c("Accession" = "uniprotswissprot")) %>%
+  na.omit() %>%  
+  mutate(Groups = case_when(
+    log2FoldChange < 0 & logFC < 0 ~ "Down/Down",
+    log2FoldChange > 0 & logFC > 0 ~ "Up/Up",
+    log2FoldChange < 0 & logFC > 0 ~ "Down transcriptome/Up proteome",
+    log2FoldChange > 0 & logFC < 0 ~ "Up transcriptome/Down proteome"))
+
+# Number of genes in each group
+CDR2L.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>%
+  count(Groups)
+
+# Scatter plot
+CDR2L.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>%
+  ggplot(aes(x = log2FoldChange, y = logFC)) +
+  geom_point(aes(color = Groups), size = 0.75) +
+  stat_smooth(method = "lm",
+              formula = y ~ x,
+              se = FALSE) +
+  geom_vline(xintercept = 0, lty = 2, color = "lightgrey") +
+  geom_hline(yintercept = 0, lty = 2, color = "lightgrey") +
+  xlab("Log2FC Transcriptome") +
+  ylab("Log2FC Proteome") +
+  scale_color_manual(values=c("#C77CFF", "#F8766D", "#7CAE00", "#00BFC4FF")) +
+  ggpubr::stat_cor(method = "spearman") +
+  theme_cowplot() +
+  theme(legend.title=element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15)) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+
+ggsave("./figs/fig_5B.png",
+       width = 2560, 
+       height = 1440, 
+       units = "px")
+```
+
+
+## Figure 6: Protein-protein network
+
+Input used to create protein-protein interaction network of genes differentially expressed in both transcriptome and proteome in Cytoscape.
+
+```{r}
+CDR2L.prot.RNA.sig.DE <- CDR2L.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>% 
+  select(Accession, Gene, logFC, adj.P.Val, log2FoldChange, padj, Groups) %>% 
+  dplyr::rename(protein_logFC = logFC, protein_padj = adj.P.Val, gene_logFC = log2FoldChange, gene_padj = padj) %>% 
+  mutate_if(is.numeric, ~round(., 4))
+
+write_tsv(CDR2L.prot.RNA.sig.DE, "./cytoscape/CDR2L.prot.RNA.sig.DE.tsv")
+```
+
+
+## Figure 7: Proliferation assay
+
+The proliferation assay was performed using the IncuCyte Live-Cell Analysis System (Sartorius). The raw data was exported and used to create the figure presented in the paper. 
+
+```{r, fig.height=8}
+prolif <- read.delim("./data/Proliferation_WT_CDR2L.txt", header = TRUE, sep = "\t", dec = ",", skip = 1)
+
+prolifMean <- prolif %>% 
+  mutate(
+    WT = rowMeans(.[, 3:18]),
+    CDR2L = rowMeans(.[, 19:34])) %>% 
+  select(Elapsed, WT, CDR2L) %>% 
+  column_to_rownames("Elapsed") %>% 
+  t() %>% 
+  reshape2::melt(., id.vars = rownames(.)) %>% 
+  rename(mean = value, 
+         sample = Var1,
+         time = Var2)
+
+prolifSE <- prolif %>% 
+  mutate(
+    WT.se = apply(.[, 3:18], 1, plotrix::std.error),               # use sd to calculate standard deviation
+    CDR2L.se = apply(.[, 19:34], 1, plotrix::std.error)) %>% 
+  select(Elapsed, WT.se, CDR2L.se) %>% 
+  column_to_rownames("Elapsed") %>% 
+  t() %>% 
+  reshape2::melt(., id.vars = rownames(.)) %>% 
+  rename(SE = value,
+         sample = Var1,
+         time = Var2)
+
+prolifComb <- bind_cols(prolifMean, prolifSE[, 3]) %>% 
+  rename(SE = ...4)
+
+# Lineplot
+prolifComb %>% 
+  ggplot(aes(x = time, y = mean, color = sample)) +
+  geom_point(size = 3) +
+  geom_path(size = 1) +
+  geom_errorbar(aes(ymin = mean-SE, ymax = mean+SE), width = 1) +
+  #geom_segment(aes(x = 0, y = 90, xend = 66, yend = 90), color = "gray") +
+  #geom_segment(aes(x = 66, y = 90, xend = 66, yend = 0), color = "gray") +
+  xlab("Hours") +
+  ylab("Confluence (%)") +
+  scale_color_manual(breaks = c("CDR2L", "WT"),
+                     values=c("#046094", "#E47878")) +
+  scale_x_continuous(n.breaks = 20) +
+  scale_y_continuous(n.breaks = 20) +
+  #ylim(0, 100) +
+  #xlim(0, 100) +
+  theme_cowplot() +
+  theme(legend.title=element_blank(),
+        legend.position = c(0.8, 0.8))
+
+ggsave("./figs/fig_7.png",
+       width = 2560, 
+       height = 1440, 
+       units = "px")
+```
+
+
+# Supplementary Figures 
+
+## Supplementary Figure S1: Correlation between datasets
+
+```{r}
+# Prepare transcriptome data
+cor_transcriptome_avg <- CPM %>% 
+  distinct(uniprotswissprot, .keep_all = TRUE) %>%                       
+  na.omit(uniprotswissprot) %>%
+  remove_rownames() %>% 
+  column_to_rownames("uniprotswissprot") %>%
+  mutate(
+    WT.avg = rowMeans(.[, 3:5]),    
+    KO.CDR1.avg = rowMeans(.[, 6:8]),
+    KO.CDR2.avg = rowMeans(.[, 9:11]),
+    KO.CDR2L.avg = rowMeans(.[, 12:14])) %>% 
+  select(15:18) %>%  
+  t() %>%
+  reshape2::melt(., id.vars = rownames(.)) %>% 
+  dplyr::rename(sample = Var1,
+         protein = Var2) %>% 
+  mutate(type = "transcriptome") 
+
+# Prepare proteome data
+cor_proteome_avg <- m.RF %>% 
+  log2() %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  mutate(
+    WT.avg = rowMeans(.[, 1:3]),    
+    KO.CDR1.avg = rowMeans(.[, 4:6]),
+    KO.CDR2.avg = rowMeans(.[, 7:9]),
+    KO.CDR2L.avg = rowMeans(.[, 10:12])) %>% 
+  select(13:16) %>% 
+  t() %>% 
+  reshape2::melt(., id.vars = rownames(.)) %>% 
+  dplyr::rename(sample = Var1,
+         protein = Var2) %>% 
+  mutate(type = "proteome")
+
+# Prepare secretome data
+cor_secretome_avg <- m_CCM.RF %>% 
+  log2() %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  mutate(
+    WT.avg = rowMeans(.[, 1:3]),    
+    KO.CDR1.avg = rowMeans(.[, 4:6]),
+    KO.CDR2.avg = rowMeans(.[, 7:9]),
+    KO.CDR2L.avg = rowMeans(.[, 10:12])) %>% 
+  select(13:16) %>% 
+  t() %>% 
+  reshape2::melt(., id.vars = rownames(.)) %>% 
+  dplyr::rename(sample = Var1,
+         protein = Var2) %>% 
+  mutate(type = "secretome")
+```
+
+```{r, fig.height = 8, fig.width=10}
+# Transcriptome vs Proteome
+int.prot.RNA <- intersect(proteins_filt$Accession, CPM$uniprotswissprot)       
+
+cor_proteome_transcriptome <- rbind(cor_proteome_avg, cor_transcriptome_avg) %>% filter(protein %in% int.prot.RNA) %>%
+  pivot_wider(names_from = "type", values_from = "value")                         
+
+cor_proteome_transcriptome %>% 
+  ggplot(aes(x = transcriptome, y = proteome)) +    # RNA (x-axis) as independent variable, protein as dependent variable
+  geom_point(color = "#565656", size = 0.75) +
+  stat_smooth(method = "lm",
+              formula = y ~ x,
+              se = FALSE) +
+  xlab("Transcriptome") +
+  ylab("Proteome") +
+  ggpubr::stat_cor(method = "spearman") +
+  cowplot::theme_cowplot()
+
+ggsave("./figs/fig_S1A.png",
+       width = 1800, 
+       height = 1440, 
+       units = "px")
+
+# Transcriptome vs Secretome
+int.CCM.RNA <- intersect(proteins_CCM_filt$Accession, CPM$uniprotswissprot)       
+
+cor_secretome_transcriptome <- rbind(cor_secretome_avg, cor_transcriptome_avg) %>% filter(protein %in% int.CCM.RNA) %>%   
+  pivot_wider(names_from = "type", values_from = "value")                              
+
+cor_secretome_transcriptome %>% 
+  ggplot(aes(x = transcriptome, y = secretome)) + 
+  geom_point(color = "#565656", size = 0.75) +
+  stat_smooth(method = "lm",
+              formula = y ~ x,
+              se = FALSE) +
+  xlab("Transcriptome") +
+  ylab("Secretome") +
+  ggpubr::stat_cor(method = "spearman") +
+  cowplot::theme_cowplot()
+
+ggsave("./figs/fig_S1B.png",
+       width = 1800, 
+       height = 1440, 
+       units = "px")
+
+## Proteome vs Secretome
+int.prot.CCM <- intersect(proteins_filt$Accession, proteins_CCM_filt$Accession)       
+
+cor_proteome_secretome <- rbind(cor_proteome_avg, cor_secretome_avg) %>% filter(protein %in% int.prot.CCM) %>%   
+  pivot_wider(names_from = "type", values_from = "value")   
+
+cor_proteome_secretome %>% 
+  ggplot(aes(x = proteome, y = secretome)) +    
+  geom_point(color = "#565656", size = 0.75) +
+  stat_smooth(method = "lm",
+              formula = y ~ x,
+              se = FALSE) +
+  xlab("Proteome") +
+  ylab("Secretome") +
+  ggpubr::stat_cor(method = "spearman") +
+  cowplot::theme_cowplot()
+
+ggsave("./figs/fig_S1C.png",
+       width = 1800, 
+       height = 1440, 
+       units = "px")
+```
+
+
+## Supplementary Figure S2: Scatter plots of log2 fold changes in transcriptome and proteome
+
+```{r, fig.height=8}
+# Knockout CDR2 cells
+
+# Combine transcriptomic and proteomic data 
+CDR2.prot.RNA <- resProteomeCDR2 %>% 
+  inner_join(x = .,
+             y = resTranscriptomeCDR2, 
+             by = c("Accession" = "uniprotswissprot")) %>%
+  na.omit() %>%  
+  mutate(Groups = case_when(
+    log2FoldChange < 0 & logFC < 0 ~ "Down/Down",
+    log2FoldChange > 0 & logFC > 0 ~ "Up/Up",
+    log2FoldChange < 0 & logFC > 0 ~ "Down transcriptome/Up proteome",
+    log2FoldChange > 0 & logFC < 0 ~ "Up transcriptome/Down proteome"))
+
+# Number of genes in each group
+CDR2.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>%
+  dplyr::count(Groups)
+
+# Scatter plot
+CDR2.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>%
+  ggplot(aes(x = log2FoldChange, y = logFC)) +
+  geom_point(aes(color = Groups), size = 0.75) +
+  stat_smooth(method = "lm",
+              formula = y ~ x,
+              se = FALSE) +
+  geom_vline(xintercept = 0, lty = 2, color = "lightgrey") +
+  geom_hline(yintercept = 0, lty = 2, color = "lightgrey") +
+  xlab("Log2FC Transcriptome") +
+  ylab("Log2FC Proteome") +
+  scale_color_manual(values=c("#C77CFF", "#F8766D", "#7CAE00", "#00BFC4FF")) +
+  ggpubr::stat_cor(method = "spearman") +
+  cowplot::theme_cowplot() +
+  theme(legend.title=element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15)) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+
+ggsave("./figs/fig_S2A.png",
+       width = 2560, 
+       height = 1440, 
+       units = "px")
+
+
+# Knockout CDR1 cells
+
+# Combine transcriptomic and proteomic data 
+CDR1.prot.RNA <- resProteomeCDR1 %>% 
+  inner_join(x = .,
+             y = resTranscriptomeCDR1, 
+             by = c("Accession" = "uniprotswissprot")) %>%
+  na.omit() %>%  
+  mutate(Groups = case_when(
+    log2FoldChange < 0 & logFC < 0 ~ "Down/Down",
+    log2FoldChange > 0 & logFC > 0 ~ "Up/Up",
+    log2FoldChange < 0 & logFC > 0 ~ "Down transcriptome/Up proteome",
+    log2FoldChange > 0 & logFC < 0 ~ "Up transcriptome/Down proteome"))
+
+# Number of genes in each group
+CDR1.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>%
+  dplyr::count(Groups)
+
+# Scatter plot
+CDR1.prot.RNA %>% 
+  filter(padj < 0.05 & adj.P.Val < 0.05) %>%
+  ggplot(aes(x = log2FoldChange, y = logFC)) +
+  geom_point(aes(color = Groups), size = 0.75) +
+  stat_smooth(method = "lm",
+              formula = y ~ x,
+              se = FALSE) +
+  geom_vline(xintercept = 0, lty = 2, color = "lightgrey") +
+  geom_hline(yintercept = 0, lty = 2, color = "lightgrey") +
+  xlab("Log2FC Transcriptome") +
+  ylab("Log2FC Proteome") +
+  scale_color_manual(values=c("#C77CFF", "#F8766D", "#7CAE00", "#00BFC4FF")) +
+  ggpubr::stat_cor(method = "spearman") +
+  cowplot::theme_cowplot() +
+  theme(legend.title=element_blank(),
+        legend.text = element_text(size = 15),
+        text = element_text(size = 15),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15)) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+
+ggsave("./figs/fig_S2B.png",
+       width = 2560, 
+       height = 1440, 
+       units = "px")
+```
+
+
+
+
+
+
+
+# Main Results 
+
+## Section 1: Knockout of genes encoding CDR proteins induces expression changes in the transcriptome, proteome, and secretome of ovarian cancer cells  
+
+### Proportion of common and uniquely differentially expressed genes 
+
+```{r}
+# Proportion of common DE genes in each dataset:
+print("Proportion of common DEGs in transcriptome")
+length(Reduce(intersect, list(UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR1))) %>% `/` (length(unique(c(UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR1))))
+
+print("Proportion of common DEGs in proteome")
+length(Reduce(intersect, list(UpSetProteome$CDR2L, UpSetProteome$CDR2, UpSetProteome$CDR1))) %>% `/` (length(unique(c(UpSetProteome$CDR2L, UpSetProteome$CDR2, UpSetProteome$CDR1))))
+
+print("Proportion of common DEGs in secretome")
+length(Reduce(intersect, list(UpSetSecretome$CDR2L, UpSetSecretome$CDR2, UpSetSecretome$CDR1))) %>% `/` (length(unique(c(UpSetSecretome$CDR2L, UpSetSecretome$CDR2, UpSetSecretome$CDR1))))
+
+# Proportion of DE genes unique to CDR2L in each dataset:
+print("Proportion of DEGs unique to CDR2L in transcriptome")
+length(Reduce(setdiff, list(UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR1))) %>% `/` (length(unique(c(UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR1))))
+
+print("Proportion of DEGs unique to CDR2L in proteome")
+length(Reduce(setdiff, list(UpSetProteome$CDR2L, UpSetProteome$CDR2, UpSetProteome$CDR1))) %>% `/` (length(unique(c(UpSetProteome$CDR2L, UpSetProteome$CDR2, UpSetProteome$CDR1))))
+
+print("Proportion of DEGs unique to CDR2L in secretome")
+length(Reduce(setdiff, list(UpSetSecretome$CDR2L, UpSetSecretome$CDR2, UpSetSecretome$CDR1))) %>% `/` (length(unique(c(UpSetSecretome$CDR2L, UpSetSecretome$CDR2, UpSetSecretome$CDR1))))
+
+# Proportion of DE genes unique to CDR2 in each dataset:
+print("Proportion of DEGs unique to CDR2 in transcriptome")
+length(Reduce(setdiff, list(UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR1))) %>% `/` (length(unique(c(UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR1))))
+
+print("Proportion of DEGs unique to CDR2 in proteome")
+length(Reduce(setdiff, list(UpSetProteome$CDR2, UpSetProteome$CDR2L, UpSetProteome$CDR1))) %>% `/` (length(unique(c(UpSetProteome$CDR2, UpSetProteome$CDR2L, UpSetProteome$CDR1))))
+
+print("Proportion of DEGs unique to CDR2 in secretome")
+length(Reduce(setdiff, list(UpSetSecretome$CDR2, UpSetSecretome$CDR2L, UpSetSecretome$CDR1))) %>% `/` (length(unique(c(UpSetSecretome$CDR2, UpSetSecretome$CDR2L, UpSetSecretome$CDR1))))
+
+# Proportion of DE genes unique to CDR1 in each dataset:
+print("Proportion of DEGs unique to CDR1 in transcriptome")
+length(Reduce(setdiff, list(UpSetTranscriptome$CDR1, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR2L))) %>% `/` (length(unique(c(UpSetTranscriptome$CDR1, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR2L))))
+
+print("Proportion of DEGs unique to CDR1 in proteome")
+length(Reduce(setdiff, list(UpSetProteome$CDR1, UpSetProteome$CDR2, UpSetProteome$CDR2L))) %>% `/` (length(unique(c(UpSetProteome$CDR1, UpSetProteome$CDR2, UpSetProteome$CDR2L))))
+
+print("Proportion of DEGs unique to CDR1 in secretome")
+length(Reduce(setdiff, list(UpSetSecretome$CDR1, UpSetSecretome$CDR2, UpSetSecretome$CDR2L))) %>% `/` (length(unique(c(UpSetSecretome$CDR1, UpSetSecretome$CDR2, UpSetSecretome$CDR2L))))
+```
+
+
+### Over-representation analysis of genes differentially expressed in all knockout cell lines 
+  
+Transcriptome: 
+
+```{r}
+# Set seed
+set.seed(123)
+
+# Intersect of differentially expressed genes
+DEGs.transcriptome <- Reduce(intersect, list(UpSetTranscriptome$CDR2L, UpSetTranscriptome$CDR2, UpSetTranscriptome$CDR1))
+
+# Over-representation analysis
+enrichDatabase <- c("geneontology_Biological_Process_noRedundant", "geneontology_Molecular_Function_noRedundant", "geneontology_Cellular_Component_noRedundant", "pathway_KEGG")
+
+WG.transcriptome <- lapply(enrichDatabase, function(enrichName){
+  message(paste0("Running ", enrichName, "..."))
+  WebGestaltR(enrichMethod = "ORA",
+              organism = "hsapiens",
+              enrichDatabase = enrichName,
+              interestGene = DEGs.transcriptome,
+              interestGeneType = "genesymbol",
+              collapseMethod = "mean",
+              referenceGene = CPM$gene_name,
+              referenceGeneType = "genesymbol",
+              sigMethod = "fdr",
+              fdrMethod = "BH",
+              minNum = 10,
+              maxNum = 500,
+              isOutput = FALSE) %>% 
+    as_tibble() %>% 
+    mutate(Set = enrichName)
+})
+names(WG.transcriptome) <- names(enrichDatabase)
+df.WG.transcriptome <- do.call(rbind, WG.transcriptome)
+
+# Compile results in a single table
+res.WG.transcriptome <- df.WG.transcriptome %>%
+  arrange(FDR) %>%
+  select(geneSet, description, size, overlap, expect, enrichmentRatio, pValue, FDR, Set, userId)
+```
+
+Proteome: 
+
+```{r}
+# Set seed
+set.seed(123)
+
+# Intersect of differentially expressed genes
+DEGs.proteome <- Reduce(intersect, list(UpSetProteome$CDR2L, UpSetProteome$CDR2, UpSetProteome$CDR1))
+
+# Over-representation analysis
+enrichDatabase <- c("geneontology_Biological_Process_noRedundant", "geneontology_Molecular_Function_noRedundant", "geneontology_Cellular_Component_noRedundant", "pathway_KEGG")
+
+WG.proteome <- lapply(enrichDatabase, function(enrichName){
+  message(paste0("Running ", enrichName, "..."))
+  WebGestaltR(enrichMethod = "ORA",
+              organism = "hsapiens",
+              enrichDatabase = enrichName,
+              interestGene = DEGs.proteome,
+              interestGeneType = "genesymbol",
+              collapseMethod = "mean",
+              referenceGene = proteins_keep$Gene,
+              referenceGeneType = "genesymbol",
+              sigMethod = "fdr",
+              fdrMethod = "BH",
+              minNum = 10,
+              maxNum = 500,
+              isOutput = FALSE) %>% 
+    as_tibble() %>% 
+    mutate(Set = enrichName)
+})
+names(WG.proteome) <- names(enrichDatabase)
+df.WG.proteome <- do.call(rbind, WG.proteome)
+
+# Compile results in a single table
+res.WG.proteome <- df.WG.proteome %>%
+  arrange(FDR) %>%
+  select(geneSet, description, size, overlap, expect, enrichmentRatio, pValue, FDR, Set, userId)
+```
+
+Secretome: 
+
+```{r}
+# Set seed
+set.seed(123)
+
+# Intersect of differentially expressed genes
+DEGs.secretome <- Reduce(intersect, list(UpSetSecretome$CDR2L, UpSetSecretome$CDR2, UpSetSecretome$CDR1))
+
+# Over-representation analysis
+enrichDatabase <- c("geneontology_Biological_Process_noRedundant", "geneontology_Molecular_Function_noRedundant", "geneontology_Cellular_Component_noRedundant", "pathway_KEGG")
+
+WG.secretome <- lapply(enrichDatabase, function(enrichName){
+  message(paste0("Running ", enrichName, "..."))
+  WebGestaltR(enrichMethod = "ORA",
+              organism = "hsapiens",
+              enrichDatabase = enrichName,
+              interestGene = DEGs.secretome,
+              interestGeneType = "genesymbol",
+              collapseMethod = "mean",
+              referenceGene = proteins_CCM_keep$Gene,
+              referenceGeneType = "genesymbol",
+              sigMethod = "fdr",
+              fdrMethod = "BH",
+              minNum = 10,
+              maxNum = 500,
+              isOutput = FALSE) %>% 
+    as_tibble() %>% 
+    mutate(Set = enrichName)
+})
+names(WG.secretome) <- names(enrichDatabase)
+df.WG.secretome <- do.call(rbind, WG.secretome)
+
+# Compile results in a single table
+res.WG.secretome <- df.WG.secretome %>%
+  arrange(FDR) %>%
+  select(geneSet, description, size, overlap, expect, enrichmentRatio, pValue, FDR, Set, userId)
+```
+
+
+## Section 2: Knockout of CDR2L results in a unique transcriptomic and proteomic expression profile
+
+Genes driving the separation between CDR2L and the other cell lines in the principal component analysis. 
+
+```{r}
+pcaVarTranscriptome <- factoextra::get_pca_var(pcaTranscriptome)
+pcaVarProteome <- factoextra::get_pca_var(pcaProteome)
+
+Venn.PCA <- list(
+  Transcriptome = as.data.frame(pcaVarTranscriptome$contrib) %>%
+    arrange(-Dim.1) %>% 
+    rownames_to_column(., "gene_id") %>% 
+    left_join(x = .,
+              y = CPM %>% select(gene_id, uniprotswissprot),
+              by = "gene_id") %>% 
+    pull(uniprotswissprot) %>% 
+    head(n = 1000),
+  Proteome = as.data.frame(pcaVarProteome$contrib) %>% 
+    arrange(-Dim.1) %>% 
+    rownames(.) %>% 
+    head(n = 1000))
+
+ggvenn(Venn.PCA, fill_color = c("#CD534CFF", "#0073C2FF"), stroke_size = 0.5, set_name_size = 4)
+```
+
+
+## Section 5: Knockout of CDR2L causes downregulation of key regulators of the cell cycle
+
+Input for transcription factor enrichment analysis performed using [ChIP-X Enrichment Analysis version 3](https://maayanlab.cloud/chea3/).
+
+```{r}
+Input_ChEA3 <- resTranscriptomeCDR2L %>% filter(padj < 0.05) %>% pull(gene_name)
+```
+
+Results
+
+```{r}
+res_ChEA3 <- read.xlsx("./supplement/supplementary_table_S9.xlsx")
+```
+
+
+## Section 6: CDR2L interacts with ribosome biogenesis factors and regulators of the cell cycle
+
+Intersect of potential interaction partners of CDR2L and ribosome biogenesis factors, eukaryotic initiation factors and cell cycle proteins.  
+Potential interaction partners identified by co-immunoprecipitation (co-IP) coupled with mass spectrometry. Data originally produced by [Herdlevaer et al. (2020)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7664253/).
+
+```{r}
+IP.hits <- readxl::read_xlsx(path = "./data/Interaction_partners_of_CDR2L.xlsx")
+
+# Intersect with ribosome biogenesis factors
+intersect(IP.hits$Gene, annot_df$Gene) %>% sort()
+
+# Intersect with eukaryotic initiation factors
+intersect(IP.hits$Gene,
+          filter(resProteomeCDR2L, adj.P.Val < 0.05 & grepl("^EIF", Gene)) %>% pull(Gene)) %>% sort()
+
+# Intersect with cell cycle proteins
+intersect(IP.hits$Gene, GenesOfInterest) %>% sort()
+```
+
+
+
+
+
+# Supplementary Tables
+
+```{r}
+# Supplementary Table S1: Transcriptome dataset
+write.xlsx(CPM, file = "./supplement/supplementary_table_S1.xlsx")
+
+# Supplementary Table S2: Proteome dataset
+suppTab2 <- proteins_keep %>% 
+  select(Accession, Gene, Description, 6:17)
+write.xlsx(suppTab2, file = "./supplement/supplementary_table_S2.xlsx")
+
+# Supplementary Table S3: Secretome dataset
+suppTab3 <- proteins_CCM_keep %>% 
+  select(Accession, Gene, Description, 6:17)
+write.xlsx(suppTab3, file = "./supplement/supplementary_table_S3.xlsx")
+
+# Supplementary Table S4: Differential expression analysis of CDR2L-knockout cells
+names <- list('Transcriptome' = resTranscriptomeCDR2L, 'Proteome' = resProteomeCDR2L, 'Secretome' = resSecretomeCDR2L)
+write.xlsx(names, file = "./supplement/supplementary_table_S4.xlsx")
+
+# Supplementary Table S5: Differential expression analysis of CDR2-knockout cells
+names <- list('Transcriptome' = resTranscriptomeCDR2, 'Proteome' = resProteomeCDR2, 'Secretome' = resSecretomeCDR2)
+write.xlsx(names, file = "./supplement/supplementary_table_S5.xlsx")
+
+# Supplementary Table S6: Differential expression analysis of CDR1-knockout cells
+names <- list('Transcriptome' = resTranscriptomeCDR1, 'Proteome' = resProteomeCDR1, 'Secretome' = resSecretomeCDR1)
+write.xlsx(names, file = "./supplement/supplementary_table_S6.xlsx")
+
+# Supplementary Table S7: Over-representation analysis of common genes
+names <- list('Transcriptome' = res.WG.transcriptome, 'Proteome' = res.WG.proteome, 'Secretome' = res.WG.secretome)
+write.xlsx(names, file = "./supplement/supplementary_table_S7.xlsx")
+
+# Supplementary Table S8: Gene set enrichment analysis of CDR2L-knockout cells 
+names <- list('Transcriptome' = res.gsea.CDR2L.transcriptome, 'Proteome' = res.gsea.CDR2L.proteome, 'Secretome' = res.gsea.CDR2L.secretome)
+write.xlsx(names, file = "./supplement/supplementary_table_S8.xlsx")
+```
+
